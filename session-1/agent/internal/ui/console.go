@@ -41,6 +41,7 @@ func (c *Console) Confirm(action string) bool {
 // until the user types "exit" or sends EOF (Ctrl-D).
 func (c *Console) Run(ctx context.Context, ag *agent.Agent) {
 	ag.OnToolCall = c.logToolCall
+	ag.OnCompact = c.logCompact
 
 	fmt.Fprintln(c.out, "AI agent ready. Ask me anything. Type 'exit' to quit.")
 	for {
@@ -70,6 +71,10 @@ func (c *Console) Run(ctx context.Context, ag *agent.Agent) {
 
 func (c *Console) logToolCall(name, args, result string) {
 	fmt.Fprintf(c.out, "  [tool] %s(%s) -> %s\n", name, args, oneLine(result, 120))
+}
+
+func (c *Console) logCompact(summary string) {
+	fmt.Fprintf(c.out, "  [history compacted] %s\n", oneLine(summary, 120))
 }
 
 func oneLine(s string, max int) string {
