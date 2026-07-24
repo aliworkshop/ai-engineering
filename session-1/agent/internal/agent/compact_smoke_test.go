@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/joho/godotenv"
-	openai "github.com/sashabaranov/go-openai"
 
 	"no_tools/agent/internal/llm"
 	"no_tools/agent/internal/tools"
@@ -48,7 +47,7 @@ func TestCompactionShrinksHistory(t *testing.T) {
 	if len(ag.history) != 4 {
 		t.Fatalf("expected history compacted to 4 messages (system + summary + last turn), got %d", len(ag.history))
 	}
-	if ag.history[len(ag.history)-1].Role != openai.ChatMessageRoleAssistant {
+	if ag.history[len(ag.history)-1].ChatAssistantMessage == nil {
 		t.Fatalf("expected the last turn's answer to be preserved verbatim")
 	}
 }

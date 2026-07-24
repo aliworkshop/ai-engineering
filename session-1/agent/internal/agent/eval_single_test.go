@@ -22,7 +22,9 @@ import (
 	"testing"
 
 	"github.com/joho/godotenv"
-	openai "github.com/sashabaranov/go-openai"
+
+	openrouter "github.com/OpenRouterTeam/go-sdk"
+	"github.com/OpenRouterTeam/go-sdk/models/components"
 
 	"no_tools/agent/internal/llm"
 	"no_tools/agent/internal/tools"
@@ -93,25 +95,29 @@ func TestEvalToolSelection(t *testing.T) {
 // then returns the tool calls the model asked for (nil if none). It mirrors the
 // real agent's first `think` step but never runs the tools — so we can inspect
 // both which tools it chose and the arguments it passed them.
-func toolsChosen(t *testing.T, client *openai.Client, specs []openai.Tool, prompt string) []openai.ToolCall {
+func toolsChosen(t *testing.T, client *openrouter.OpenRouter, specs []components.ChatFunctionTool, prompt string) []components.ChatToolCall {
 	t.Helper()
-	resp, err := client.CreateChatCompletion(context.Background(), openai.ChatCompletionRequest{
-		Model: evalModel,
-		Messages: []openai.ChatCompletionMessage{
-			{Role: openai.ChatMessageRoleSystem, Content: SystemPrompt},
-			{Role: openai.ChatMessageRoleUser, Content: prompt},
+	auto := components.CreateChatToolChoiceChatToolChoiceAuto(components.ChatToolChoiceAutoAuto)
+	res, err := client.Chat.Send(context.Background(), components.ChatRequest{
+		Model: openrouter.String(evalModel),
+		Messages: []components.ChatMessages{
+			systemMsg(SystemPrompt),
+			userMsg(prompt),
 		},
 		Tools:      specs,
-		ToolChoice: "auto",
-	})
+		ToolChoice: &auto,
+	}, nil)
 	if err != nil {
 		t.Fatalf("completion error: %v", err)
 	}
-	return resp.Choices[0].Message.ToolCalls
+	if res.ChatResult == nil || len(res.ChatResult.Choices) == 0 {
+		t.Fatalf("model returned no choices")
+	}
+	return res.ChatResult.Choices[0].Message.ToolCalls
 }
 
 // callNames pulls the tool names out of a set of calls.
-func callNames(calls []openai.ToolCall) []string {
+func callNames(calls []components.ChatToolCall) []string {
 	var names []string
 	for _, c := range calls {
 		names = append(names, c.Function.Name)
@@ -120,7 +126,7 @@ func callNames(calls []openai.ToolCall) []string {
 }
 
 // callArgs pulls the raw argument JSON out of each call, for readable logging.
-func callArgs(calls []openai.ToolCall) []string {
+func callArgs(calls []components.ChatToolCall) []string {
 	var args []string
 	for _, c := range calls {
 		args = append(args, c.Function.Arguments)
@@ -132,7 +138,7 @@ func callArgs(calls []openai.ToolCall) []string {
 // human-readable reason otherwise. Each want entry requires that argument's
 // value to contain the given substring (case-insensitive). An empty want passes
 // trivially — it's how cases opt out of argument checking.
-func argsMismatch(calls []openai.ToolCall, want map[string]string) string {
+func argsMismatch(calls []components.ChatToolCall, want map[string]string) string {
 	if len(want) == 0 {
 		return ""
 	}
