@@ -7,13 +7,13 @@ import (
 	"path/filepath"
 	"strings"
 
-	openai "github.com/sashabaranov/go-openai"
+	"github.com/OpenRouterTeam/go-sdk/models/components"
 )
 
 // ReadFile returns a file's contents. Read-only, so it never asks for approval.
 type ReadFile struct{}
 
-func (ReadFile) Spec() openai.Tool {
+func (ReadFile) Spec() components.ChatFunctionTool {
 	return defineTool("read_file", "Read a file from disk and return its contents.",
 		`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}`)
 }
@@ -35,7 +35,7 @@ func (ReadFile) Run(_ context.Context, args string) (string, error) {
 // WriteFile creates or overwrites a file. Dangerous — gated by the Approver.
 type WriteFile struct{ Approver Approver }
 
-func (WriteFile) Spec() openai.Tool {
+func (WriteFile) Spec() components.ChatFunctionTool {
 	return defineTool("write_file", "Create or overwrite a file on disk. Requires human approval.",
 		`{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}`)
 }
@@ -64,7 +64,7 @@ func (t WriteFile) Run(_ context.Context, args string) (string, error) {
 // existing file. Dangerous — gated by the Approver.
 type EditFile struct{ Approver Approver }
 
-func (EditFile) Spec() openai.Tool {
+func (EditFile) Spec() components.ChatFunctionTool {
 	return defineTool("edit_file",
 		"Replace the first occurrence of old_string with new_string in an existing file. Requires human approval.",
 		`{"type":"object","properties":{"path":{"type":"string"},"old_string":{"type":"string"},"new_string":{"type":"string"}},"required":["path","old_string","new_string"]}`)
@@ -99,7 +99,7 @@ func (t EditFile) Run(_ context.Context, args string) (string, error) {
 // DeleteFile removes a file. Dangerous — gated by the Approver.
 type DeleteFile struct{ Approver Approver }
 
-func (DeleteFile) Spec() openai.Tool {
+func (DeleteFile) Spec() components.ChatFunctionTool {
 	return defineTool("delete_file", "Delete a file from disk. Requires human approval.",
 		`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}`)
 }

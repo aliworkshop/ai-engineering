@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"net/url"
 
-	openai "github.com/sashabaranov/go-openai"
+	"github.com/OpenRouterTeam/go-sdk/models/components"
 )
 
 // GetWeather reports the current weather for a place by name. Read-only, so no
@@ -17,7 +17,7 @@ type GetWeather struct {
 	HTTP *http.Client
 }
 
-func (GetWeather) Spec() openai.Tool {
+func (GetWeather) Spec() components.ChatFunctionTool {
 	return defineTool("get_weather",
 		"Get the current weather (temperature and wind) for a city or place by name.",
 		`{"type":"object","properties":{"location":{"type":"string","description":"City or place name, e.g. 'Paris' or 'Tokyo, Japan'"}},"required":["location"]}`)

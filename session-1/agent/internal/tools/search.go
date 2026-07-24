@@ -10,7 +10,7 @@ import (
 	"net/url"
 	"strings"
 
-	openai "github.com/sashabaranov/go-openai"
+	"github.com/OpenRouterTeam/go-sdk/models/components"
 )
 
 // WebSearch looks facts up on the web. Read-only, so no approval is needed.
@@ -21,7 +21,7 @@ type WebSearch struct {
 	TavilyKey string
 }
 
-func (WebSearch) Spec() openai.Tool {
+func (WebSearch) Spec() components.ChatFunctionTool {
 	return defineTool("web_search", "Search the web for current or external facts.",
 		`{"type":"object","properties":{"query":{"type":"string","description":"What to search for"}},"required":["query"]}`)
 }

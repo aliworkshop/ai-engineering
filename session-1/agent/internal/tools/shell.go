@@ -6,14 +6,14 @@ import (
 	"os/exec"
 	"strings"
 
-	openai "github.com/sashabaranov/go-openai"
+	"github.com/OpenRouterTeam/go-sdk/models/components"
 )
 
 // RunCommand runs a shell command and returns its combined output. This is how
 // the agent executes the scripts it writes. Dangerous — gated by the Approver.
 type RunCommand struct{ Approver Approver }
 
-func (RunCommand) Spec() openai.Tool {
+func (RunCommand) Spec() components.ChatFunctionTool {
 	return defineTool("run_command",
 		"Run a shell command and return its combined output. Use this to execute scripts. Requires human approval.",
 		`{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}`)

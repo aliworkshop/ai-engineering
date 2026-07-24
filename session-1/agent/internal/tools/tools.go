@@ -7,7 +7,7 @@ import (
 	"context"
 	"encoding/json"
 
-	openai "github.com/sashabaranov/go-openai"
+	"github.com/OpenRouterTeam/go-sdk/models/components"
 )
 
 // Approver is the human-in-the-loop gate. A dangerous tool must get a "yes"
@@ -21,7 +21,7 @@ type Approver interface {
 // exists and what arguments it takes; Run executes it with the JSON arguments
 // the model produced.
 type Tool interface {
-	Spec() openai.Tool
+	Spec() components.ChatFunctionTool
 	Run(ctx context.Context, args string) (string, error)
 }
 
@@ -35,7 +35,7 @@ type Registry struct {
 func NewRegistry(list ...Tool) *Registry {
 	r := &Registry{byName: make(map[string]Tool, len(list))}
 	for _, t := range list {
-		name := t.Spec().Function.Name
+		name := specName(t.Spec())
 		r.byName[name] = t
 		r.order = append(r.order, name)
 	}
@@ -43,12 +43,18 @@ func NewRegistry(list ...Tool) *Registry {
 }
 
 // Specs returns every tool definition to advertise to the model.
-func (r *Registry) Specs() []openai.Tool {
-	specs := make([]openai.Tool, 0, len(r.order))
+func (r *Registry) Specs() []components.ChatFunctionTool {
+	specs := make([]components.ChatFunctionTool, 0, len(r.order))
 	for _, name := range r.order {
 		specs = append(specs, r.byName[name].Spec())
 	}
 	return specs
+}
+
+// specName pulls a function tool's advertised name out of the union type. Every
+// tool here is a plain function tool, so that member is always populated.
+func specName(spec components.ChatFunctionTool) string {
+	return spec.ChatFunctionToolFunction.Function.Name
 }
 
 // Dispatch runs the named tool and ALWAYS returns a string, turning any failure
@@ -65,17 +71,26 @@ func (r *Registry) Dispatch(ctx context.Context, name, args string) string {
 	return result
 }
 
-// defineTool builds an openai.Tool from a JSON-Schema string. Small helper so
-// each tool's Spec() stays a one-liner.
-func defineTool(name, description, schema string) openai.Tool {
-	return openai.Tool{
-		Type: openai.ToolTypeFunction,
-		Function: &openai.FunctionDefinition{
-			Name:        name,
-			Description: description,
-			Parameters:  json.RawMessage(schema),
-		},
+// defineTool builds a function-tool spec from a JSON-Schema string. The SDK
+// wants parameters as a decoded object, so we unmarshal the schema here — the
+// schemas are compile-time constants, so a parse failure is a programming error
+// and we panic rather than surface it at runtime. Keeps each Spec() a one-liner.
+func defineTool(name, description, schema string) components.ChatFunctionTool {
+	var params map[string]any
+	if err := json.Unmarshal([]byte(schema), &params); err != nil {
+		panic("tools: invalid JSON schema for " + name + ": " + err.Error())
 	}
+	desc := description
+	return components.CreateChatFunctionToolChatFunctionToolFunction(
+		components.ChatFunctionToolFunction{
+			Type: components.ChatFunctionToolTypeFunction,
+			Function: components.ChatFunctionToolFunctionFunction{
+				Name:        name,
+				Description: &desc,
+				Parameters:  params,
+			},
+		},
+	)
 }
 
 // decode unmarshals the model's JSON arguments into a typed struct.
