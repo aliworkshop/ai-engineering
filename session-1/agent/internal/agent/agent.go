@@ -8,7 +8,8 @@ import (
 	"fmt"
 	"strings"
 
-	openai "github.com/sashabaranov/go-openai"
+	openrouter "github.com/OpenRouterTeam/go-sdk"
+	"github.com/OpenRouterTeam/go-sdk/models/components"
 )
 
 // SystemPrompt tells the model how to behave and when to reach for a tool.
@@ -44,16 +45,16 @@ pleasantries and redundant detail. Write it as notes, not prose.`
 // ToolBox is the set of tools the agent can use. tools.Registry satisfies it;
 // depending on an interface keeps this package free of tool implementations.
 type ToolBox interface {
-	Specs() []openai.Tool
+	Specs() []components.ChatFunctionTool
 	Dispatch(ctx context.Context, name, args string) string
 }
 
 // Agent holds one running conversation and the loop that advances it.
 type Agent struct {
-	client  *openai.Client
+	client  *openrouter.OpenRouter
 	model   string
 	tools   ToolBox
-	history []openai.ChatCompletionMessage
+	history []components.ChatMessages
 	turns   int // completed questions, for deciding when to compact
 
 	// CompactEvery is how many completed questions trigger a history compaction.
@@ -70,33 +71,65 @@ type Agent struct {
 }
 
 // New starts an agent with the system prompt already in its history.
-func New(client *openai.Client, model string, tools ToolBox) *Agent {
+func New(client *openrouter.OpenRouter, model string, tools ToolBox) *Agent {
 	return &Agent{
 		client:       client,
 		model:        model,
 		tools:        tools,
 		CompactEvery: defaultCompactEvery,
-		history: []openai.ChatCompletionMessage{
-			{Role: openai.ChatMessageRoleSystem, Content: SystemPrompt},
+		history: []components.ChatMessages{
+			systemMsg(SystemPrompt),
 		},
 	}
+}
+
+// systemMsg, userMsg, and toolMsg build the SDK's role-tagged message union so
+// the rest of the loop can construct history entries without repeating the
+// verbose constructor calls.
+func systemMsg(text string) components.ChatMessages {
+	return components.CreateChatMessagesSystem(components.ChatSystemMessage{
+		Role:    components.ChatSystemMessageRoleSystem,
+		Content: components.CreateChatSystemMessageContentStr(text),
+	})
+}
+
+func userMsg(text string) components.ChatMessages {
+	return components.CreateChatMessagesUser(components.ChatUserMessage{
+		Role:    components.ChatUserMessageRoleUser,
+		Content: components.CreateChatUserMessageContentStr(text),
+	})
+}
+
+func toolMsg(callID, text string) components.ChatMessages {
+	return components.CreateChatMessagesTool(components.ChatToolMessage{
+		Role:       components.ChatToolMessageRoleTool,
+		Content:    components.CreateChatToolMessageContentStr(text),
+		ToolCallID: callID,
+	})
+}
+
+// assistantText pulls the plain-text content out of an assistant message, which
+// the SDK models as an optional string-or-array union. Tool-call-only replies
+// have no text and yield "".
+func assistantText(m components.ChatAssistantMessage) string {
+	if c, ok := m.Content.Get(); ok && c != nil && c.Str != nil {
+		return *c.Str
+	}
+	return ""
 }
 
 // Ask sends one user message and returns the agent's final answer, running any
 // tools the model requests along the way. The conversation is remembered, so
 // follow-up questions have context.
 func (a *Agent) Ask(ctx context.Context, input string) (string, error) {
-	a.history = append(a.history, openai.ChatCompletionMessage{
-		Role:    openai.ChatMessageRoleUser,
-		Content: input,
-	})
+	a.history = append(a.history, userMsg(input))
 
 	for step := 0; step < maxSteps; step++ {
 		reply, err := a.think(ctx)
 		if err != nil {
 			return "", err
 		}
-		a.history = append(a.history, reply)
+		a.history = append(a.history, components.CreateChatMessagesAssistant(reply))
 
 		if len(reply.ToolCalls) == 0 {
 			// A plain message = the final answer. The conversation is now at a
@@ -104,7 +137,7 @@ func (a *Agent) Ask(ctx context.Context, input string) (string, error) {
 			// moment to compact if we've hit the interval.
 			a.turns++
 			a.maybeCompact(ctx)
-			return reply.Content, nil
+			return assistantText(reply), nil
 		}
 		a.runTools(ctx, reply.ToolCalls)
 	}
@@ -135,7 +168,7 @@ func (a *Agent) compact(ctx context.Context) error {
 	// on both sides, so the next request never sees an orphaned tool message.
 	lastUser := -1
 	for i := len(a.history) - 1; i >= 1; i-- {
-		if a.history[i].Role == openai.ChatMessageRoleUser {
+		if a.history[i].ChatUserMessage != nil {
 			lastUser = i
 			break
 		}
@@ -147,27 +180,21 @@ func (a *Agent) compact(ctx context.Context) error {
 	older := a.history[1:lastUser]
 	recent := a.history[lastUser:]
 
-	resp, err := a.client.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
-		Model: a.model,
-		Messages: []openai.ChatCompletionMessage{
-			{Role: openai.ChatMessageRoleSystem, Content: compactPrompt},
-			{Role: openai.ChatMessageRoleUser, Content: renderTranscript(older)},
-		},
-	})
+	reply, err := a.send(ctx, []components.ChatMessages{
+		systemMsg(compactPrompt),
+		userMsg(renderTranscript(older)),
+	}, nil)
 	if err != nil {
 		return err
 	}
-	summary := strings.TrimSpace(resp.Choices[0].Message.Content)
+	summary := strings.TrimSpace(assistantText(reply))
 	if summary == "" {
 		return nil // nothing usable came back; keep the real history
 	}
 
-	compacted := make([]openai.ChatCompletionMessage, 0, 2+len(recent))
+	compacted := make([]components.ChatMessages, 0, 2+len(recent))
 	compacted = append(compacted, a.history[0]) // system prompt, untouched
-	compacted = append(compacted, openai.ChatCompletionMessage{
-		Role:    openai.ChatMessageRoleSystem,
-		Content: "Summary of the conversation so far:\n" + summary,
-	})
+	compacted = append(compacted, systemMsg("Summary of the conversation so far:\n"+summary))
 	compacted = append(compacted, recent...) // most recent turn, verbatim
 	a.history = compacted
 
@@ -179,51 +206,66 @@ func (a *Agent) compact(ctx context.Context) error {
 
 // renderTranscript flattens messages into plain text the model can summarize,
 // including tool calls and their results so no context is silently dropped.
-func renderTranscript(msgs []openai.ChatCompletionMessage) string {
+func renderTranscript(msgs []components.ChatMessages) string {
 	var b strings.Builder
 	for _, m := range msgs {
-		switch m.Role {
-		case openai.ChatMessageRoleUser:
-			fmt.Fprintf(&b, "User: %s\n", m.Content)
-		case openai.ChatMessageRoleAssistant:
-			if m.Content != "" {
-				fmt.Fprintf(&b, "Assistant: %s\n", m.Content)
+		switch {
+		case m.ChatUserMessage != nil:
+			fmt.Fprintf(&b, "User: %s\n", strDeref(m.ChatUserMessage.Content.Str))
+		case m.ChatAssistantMessage != nil:
+			if txt := assistantText(*m.ChatAssistantMessage); txt != "" {
+				fmt.Fprintf(&b, "Assistant: %s\n", txt)
 			}
-			for _, tc := range m.ToolCalls {
+			for _, tc := range m.ChatAssistantMessage.ToolCalls {
 				fmt.Fprintf(&b, "Assistant called %s(%s)\n", tc.Function.Name, tc.Function.Arguments)
 			}
-		case openai.ChatMessageRoleTool:
-			fmt.Fprintf(&b, "Tool result: %s\n", m.Content)
+		case m.ChatToolMessage != nil:
+			fmt.Fprintf(&b, "Tool result: %s\n", strDeref(m.ChatToolMessage.Content.Str))
 		}
 	}
 	return b.String()
 }
 
-// think asks the model for its next move given the conversation so far.
-func (a *Agent) think(ctx context.Context) (openai.ChatCompletionMessage, error) {
-	resp, err := a.client.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
-		Model:    a.model,
-		Messages: a.history,
-		Tools:    a.tools.Specs(),
-	})
-	if err != nil {
-		return openai.ChatCompletionMessage{}, err
+// strDeref returns the pointed-to string, or "" if the pointer is nil (the
+// content was supplied as a structured-part array rather than a plain string).
+func strDeref(s *string) string {
+	if s == nil {
+		return ""
 	}
-	return resp.Choices[0].Message, nil
+	return *s
+}
+
+// think asks the model for its next move given the conversation so far.
+func (a *Agent) think(ctx context.Context) (components.ChatAssistantMessage, error) {
+	return a.send(ctx, a.history, a.tools.Specs())
+}
+
+// send issues one chat completion and returns the assistant message from the
+// first choice. It's the single place we call the OpenRouter SDK, so both the
+// main loop and compaction share the same request shape and error handling.
+func (a *Agent) send(ctx context.Context, messages []components.ChatMessages, toolSpecs []components.ChatFunctionTool) (components.ChatAssistantMessage, error) {
+	res, err := a.client.Chat.Send(ctx, components.ChatRequest{
+		Model:    openrouter.String(a.model),
+		Messages: messages,
+		Tools:    toolSpecs,
+	}, nil)
+	if err != nil {
+		return components.ChatAssistantMessage{}, err
+	}
+	if res.ChatResult == nil || len(res.ChatResult.Choices) == 0 {
+		return components.ChatAssistantMessage{}, fmt.Errorf("model returned no choices")
+	}
+	return res.ChatResult.Choices[0].Message, nil
 }
 
 // runTools executes every tool the model asked for and appends the results to
 // the conversation so the next round can use them.
-func (a *Agent) runTools(ctx context.Context, calls []openai.ToolCall) {
+func (a *Agent) runTools(ctx context.Context, calls []components.ChatToolCall) {
 	for _, call := range calls {
 		result := a.tools.Dispatch(ctx, call.Function.Name, call.Function.Arguments)
 		if a.OnToolCall != nil {
 			a.OnToolCall(call.Function.Name, call.Function.Arguments, result)
 		}
-		a.history = append(a.history, openai.ChatCompletionMessage{
-			Role:       openai.ChatMessageRoleTool,
-			Content:    result,
-			ToolCallID: call.ID,
-		})
+		a.history = append(a.history, toolMsg(call.ID, result))
 	}
 }
