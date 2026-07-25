@@ -22,7 +22,7 @@ import (
 const Model = "openai/gpt-4o-mini"
 
 func main() {
-	godotenv.Load()
+	loadEnv()
 
 	apiKey := os.Getenv("OPENROUTER_API_KEY")
 	if apiKey == "" {
@@ -37,4 +37,16 @@ func main() {
 	assistant := agent.New(llm.NewOpenRouter(apiKey), Model, toolbox)
 
 	console.Run(context.Background(), assistant)
+}
+
+// loadEnv reads the .env from the locations the app is actually launched from.
+// `go run ./agent` runs with the working directory at the repo root, so a bare
+// godotenv.Load() only sees ./.env there and misses the agent's own .env (where
+// keys like TAVILY_API_KEY live). We load both candidates; godotenv keeps the
+// first value seen for a key, so nothing already set is overwritten. Missing
+// files are fine — Load just returns an error we ignore.
+func loadEnv() {
+	for _, path := range []string{".env", "agent/.env"} {
+		_ = godotenv.Load(path)
+	}
 }
