@@ -23,6 +23,9 @@ Rules:
 - To create and run a script: write_file, then run_command, then read_file to
   check the result.
 - To change an existing file: read_file first, then edit_file.
+- If read_file, edit_file, or delete_file reports that a file is missing, do NOT
+  conclude it doesn't exist. First locate it with run_command — e.g.
+  "find . -name README.md" or "ls <dir>" — then retry with the real path.
 - Keep answers short and clear.`
 
 // maxSteps caps how many tool rounds the model may take before we force a stop,
@@ -126,21 +129,27 @@ func (a *Agent) Ask(ctx context.Context, input string) (string, error) {
 	a.history = append(a.history, userMsg(input))
 
 	for step := 0; step < maxSteps; step++ {
+		// 1. ask the model what to do next
 		reply, err := a.think(ctx)
 		if err != nil {
 			return "", err
 		}
+		//    remember what it said
 		a.history = append(a.history, components.CreateChatMessagesAssistant(reply))
 
+		// 2. no tools requested?
 		if len(reply.ToolCalls) == 0 {
 			// A plain message = the final answer. The conversation is now at a
 			// safe boundary (no tool call awaits its result), so it's the right
 			// moment to compact if we've hit the interval.
 			a.turns++
 			a.maybeCompact(ctx)
+			//    → that's the final answer, done
 			return assistantText(reply), nil
 		}
+		// 3. run the tools it asked for,
 		a.runTools(ctx, reply.ToolCalls)
+		//    append results, loop again
 	}
 	return "", fmt.Errorf("stopped after %d tool steps without a final answer", maxSteps)
 }
