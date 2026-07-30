@@ -54,12 +54,17 @@ func (s *spinner) Start() {
 	go s.run()
 }
 
+// frameRate is how long each frame is held. At 60ms the braille wheel reads as
+// continuous motion rather than a stutter, without spending a write every few
+// milliseconds on an animation nobody studies frame by frame.
+const frameRate = 60 * time.Millisecond
+
 func (s *spinner) run() {
 	frames := []rune("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
-	// Draw the first frame immediately so even a sub-100ms model call shows the
+	// Draw the first frame immediately so even a very short model call shows the
 	// spinner at least once, instead of waiting a full tick that may never come.
 	fmt.Fprintf(s.out, "\r%c %s", frames[0], s.label)
-	ticker := time.NewTicker(90 * time.Millisecond)
+	ticker := time.NewTicker(frameRate)
 	defer ticker.Stop()
 	for i := 1; ; i++ {
 		select {
