@@ -58,6 +58,13 @@ Key seams (interfaces):
 - **`get_weather`** — current temperature and wind for a place, via Open-Meteo's
   free, keyless APIs (geocode the name, then fetch conditions). Read-only, no
   approval — `tools/weather.go`.
+- **Thinking spinner** — a turn can take several model round trips, so the
+  console animates a one-line indicator while it waits instead of leaving the
+  terminal dead. Everything that prints mid-turn (tool lines, compaction
+  notices, the approval prompt) stops the spinner first and restarts it after,
+  so a frame never lands on top of real output. It draws only to a terminal —
+  on a pipe or a test buffer it's a no-op, keeping captured output free of
+  carriage-return noise — `ui/spinner.go`, `ui/console.go`.
 - **History compaction** — every `CompactEvery` questions (default 5), the agent
   folds the older part of the conversation into one summary message and keeps the
   system prompt and the most recent turn verbatim. This caps per-request token
@@ -88,6 +95,8 @@ go test ./...            # everything (also live web search + a real model call)
 go test ./... -short     # fast, offline, deterministic (no key, no network)
 ```
 
+- **`ui` package** — spinner unit tests: it animates and clears, stays silent
+  off a terminal, and the console pauses it before printing mid-turn.
 - **`tools` package** — unit evals: script roundtrip, edit, denial blocks the
   action, read-only tools never prompt, unknown tool handled, live web search.
 - **`agent` package** — live evals (skipped with `-short` or without a key):
