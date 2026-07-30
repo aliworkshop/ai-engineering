@@ -47,7 +47,7 @@ Key seams (interfaces):
 | # | Requirement | Where |
 |---|---|---|
 | 1 | Answer from own knowledge (no tool) | `agent.SystemPrompt` + loop returns when there are no tool calls — `agent/agent.go` |
-| 2 | Search the web | `WebSearch` (Tavily if `TAVILY_API_KEY` set, else DuckDuckGo) — `tools/search.go`; `NativeWebSearch` (OpenRouter's own web plugin) — `tools/nativesearch.go` |
+| 2 | Search the web | `NativeWebSearch` — OpenRouter's own `web` plugin — `tools/nativesearch.go` |
 | 3 | Write scripts and run them | `WriteFile` + `RunCommand` + `ReadFile` — `tools/files.go`, `tools/shell.go` |
 | 4 | Edit existing files | `ReadFile` + `EditFile` — `tools/files.go` |
 | 5 | Human-in-the-loop before danger | `Approver` gate on write/edit/delete/run — `tools/*.go`, `ui/console.go` |
@@ -55,15 +55,6 @@ Key seams (interfaces):
 
 ## Beyond the six
 
-- **`openrouter_web_search`** — search through OpenRouter instead of a
-  third-party search API. OpenRouter models search as a *plugin* on a chat
-  request, so the tool sends the query as a one-off completion with the `web`
-  plugin attached; OpenRouter runs the search, injects the hits into that
-  request's prompt, and the model writes the findings back. The result is an
-  already-summarized answer with source URLs — versus `web_search`, which
-  returns raw ranked results — at the cost of one extra model call. Needs no
-  extra key (it bills to `OPENROUTER_API_KEY`), and it's only registered when
-  `tools.Default` is given `WithOpenRouterSearch` — `tools/nativesearch.go`.
 - **`get_weather`** — current temperature and wind for a place, via Open-Meteo's
   free, keyless APIs (geocode the name, then fetch conditions). Read-only, no
   approval — `tools/weather.go`.
@@ -93,8 +84,8 @@ The model never runs code itself — it only *asks*. A dangerous tool first call
 ## Tests
 
 ```sh
-go test ./...                  # everything (also live web search + a real model call)
-go test ./... -short           # fast, offline, deterministic (no key, no network)
+go test ./...            # everything (also live web search + a real model call)
+go test ./... -short     # fast, offline, deterministic (no key, no network)
 ```
 
 - **`tools` package** — unit evals: script roundtrip, edit, denial blocks the
@@ -109,10 +100,23 @@ go test ./... -short           # fast, offline, deterministic (no key, no networ
 
   The behavioral and tool-selection evals print a scorecard.
 
-## Optional: real web search
+## Web search
 
-DuckDuckGo's free API is limited. For full results, add to `.env`:
+`openrouter_web_search` is the agent's only way to look something up, and it
+goes through OpenRouter rather than a third-party search API.
 
-```
-TAVILY_API_KEY=tvly-...
-```
+OpenRouter doesn't expose search as its own endpoint — it models search as a
+*plugin on a chat request*. So the tool sends the query as a one-off completion
+with the `web` plugin attached; OpenRouter runs the search, injects the hits
+into that request's prompt, and the model writes the findings back. What the
+agent gets is therefore an already-summarized answer with source URLs, not raw
+ranked results, at the cost of one extra model call.
+
+`OPENROUTER_API_KEY` is the only key you need — searches bill to the same
+account as the model calls. Knobs live on the `NativeWebSearch` struct:
+`MaxResults` (default 5) and `Engine` (`native`, `exa`, `parallel`,
+`firecrawl`, `perplexity`; empty lets OpenRouter choose).
+
+The tool needs an authenticated client, so `tools.Default` only registers it
+when given `WithOpenRouterSearch(client, model)` — without that option the
+agent has no search at all and must answer from its own knowledge.

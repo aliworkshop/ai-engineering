@@ -4,8 +4,8 @@ package agent
 //
 // Where the tools package unit-tests each tool deterministically, this runs
 // whole tasks through the REAL agent loop and grades the outcome: did it answer
-// without a tool when it should, reach for web_search when it needed facts,
-// actually create+run a script, edit a file, and respect a "no"?
+// without a tool when it should, reach for openrouter_web_search when it needed
+// facts, actually create+run a script, edit a file, and respect a "no"?
 //
 // Run:  go test ./internal/agent -run Eval -v
 // (needs OPENROUTER_API_KEY; skipped with -short)
@@ -64,13 +64,13 @@ func TestEvalAgentBehavior(t *testing.T) {
 		{
 			name:       "knowledge/no-tool",
 			prompt:     "What is the capital of France? Answer in one word.",
-			mustNotUse: "web_search",
+			mustNotUse: "openrouter_web_search",
 			answerHas:  "paris",
 		},
 		{
 			name:        "web-search",
 			prompt:      "Search the web and tell me: who is the current Prime Minister of the UK?",
-			mustUseTool: "web_search",
+			mustUseTool: "openrouter_web_search",
 		},
 		{
 			name:      "write+run+read script",
@@ -106,7 +106,7 @@ func TestEvalAgentBehavior(t *testing.T) {
 	passed := 0
 	for _, sc := range scenarios {
 		t.Run(sc.name, func(t *testing.T) {
-			toolbox := tools.Default(approve(sc.approve))
+			toolbox := tools.Default(approve(sc.approve), tools.WithOpenRouterSearch(client, evalModel))
 			ag := New(client, evalModel, toolbox)
 
 			var used []string

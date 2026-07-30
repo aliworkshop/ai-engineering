@@ -2,7 +2,6 @@ package tools
 
 import (
 	"net/http"
-	"os"
 	"time"
 
 	openrouter "github.com/OpenRouterTeam/go-sdk"
@@ -21,7 +20,9 @@ type settings struct {
 
 // WithOpenRouterSearch enables the openrouter_web_search tool, which searches
 // through OpenRouter's own web plugin and therefore needs an authenticated
-// client. Without this option that tool simply isn't advertised to the model.
+// client. Without this option that tool simply isn't advertised to the model —
+// and since it's the agent's only way to search, the agent then has to answer
+// from its own knowledge alone.
 func WithOpenRouterSearch(client *openrouter.OpenRouter, model string) Option {
 	return func(s *settings) {
 		s.searchClient = client
@@ -42,7 +43,6 @@ func Default(approver Approver, opts ...Option) *Registry {
 	// read-only — no approval
 	list := []Tool{
 		ReadFile{},
-		WebSearch{HTTP: client, TavilyKey: os.Getenv("TAVILY_API_KEY")},
 		GetWeather{HTTP: client},
 	}
 	if s.searchClient != nil {

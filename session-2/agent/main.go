@@ -49,11 +49,12 @@ func main() {
 }
 
 // loadEnv reads the .env from the locations the app is actually launched from.
-// `go run ./agent` runs with the working directory at the repo root, so a bare
-// godotenv.Load() only sees ./.env there and misses the agent's own .env (where
-// keys like TAVILY_API_KEY live). We load both candidates; godotenv keeps the
-// first value seen for a key, so nothing already set is overwritten. Missing
-// files are fine — Load just returns an error we ignore.
+// Launched as `go run .` the working directory is this package, but launched
+// from the parent as `go run ./agent` it isn't — and a bare godotenv.Load()
+// only ever looks at ./.env, so it would miss the agent's own .env in that
+// second case. We load both candidates; godotenv keeps the first value seen for
+// a key, so nothing already set is overwritten. Missing files are fine — Load
+// just returns an error we ignore.
 func loadEnv() {
 	for _, path := range []string{".env", "agent/.env"} {
 		_ = godotenv.Load(path)

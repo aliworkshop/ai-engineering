@@ -3,7 +3,6 @@ package tools
 import (
 	"context"
 	"encoding/json"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -117,21 +116,5 @@ func TestUnknownToolIsHandled(t *testing.T) {
 	reg := Default(approve(true))
 	if got := reg.Dispatch(context.Background(), "no_such_tool", "{}"); !strings.Contains(got, "unknown tool") {
 		t.Fatalf("got %q", got)
-	}
-}
-
-// Requirement 2: web_search returns something usable. Network test — skipped
-// with `go test -short`.
-func TestWebSearch(t *testing.T) {
-	if testing.Short() {
-		t.Skip("network test; skipped in -short mode")
-	}
-	tool := WebSearch{HTTP: http.DefaultClient, TavilyKey: os.Getenv("TAVILY_API_KEY")}
-	got, err := tool.Run(context.Background(), jsonArgs(t, map[string]any{"query": "capital of France"}))
-	if err != nil {
-		t.Fatalf("web_search error: %v", err)
-	}
-	if strings.TrimSpace(got) == "" {
-		t.Fatalf("web_search returned empty")
 	}
 }

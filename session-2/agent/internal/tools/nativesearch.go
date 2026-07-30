@@ -9,13 +9,15 @@ import (
 	"github.com/OpenRouterTeam/go-sdk/models/components"
 )
 
-// NativeWebSearch searches the web through OpenRouter itself rather than a
-// third-party search API. OpenRouter exposes search as a *plugin* on a chat
-// request: we send the query as a one-off completion with the "web" plugin
+// NativeWebSearch is the agent's way to look things up on the web. It searches
+// through OpenRouter itself rather than a third-party search API.
+//
+// OpenRouter exposes search as a *plugin* on a chat request, not as its own
+// endpoint: we send the query as a one-off completion with the "web" plugin
 // attached, OpenRouter runs the search, injects the hits into that request's
-// prompt, and the model writes the findings back to us. So unlike WebSearch —
-// which returns raw ranked results — this returns an already-digested answer
-// with source URLs, at the cost of one extra model call.
+// prompt, and the model writes the findings back to us. So what comes out is an
+// already-digested answer with source URLs rather than raw ranked results, at
+// the cost of one extra model call.
 //
 // Read-only, so no approval is needed.
 type NativeWebSearch struct {
