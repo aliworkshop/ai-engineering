@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // spinner animates a "thinking" indicator on a single terminal line while the
@@ -73,14 +74,26 @@ func (s *spinner) run() {
 
 // Stop ends the animation and erases the spinner line. Safe to call when not
 // running.
+//
+// The line is blanked by overwriting it with spaces rather than with the ANSI
+// erase-to-end-of-line sequence (\033[K). IDE consoles commonly honour a bare
+// carriage return but drop \033[K, which would leave "⠦ thinking…" stranded on
+// screen underneath the answer. Spaces work anywhere a \r does.
 func (s *spinner) Stop() {
 	if !s.enabled || s.stop == nil {
 		return
 	}
 	close(s.stop)
-	<-s.done                      // wait for the goroutine to stop writing
-	fmt.Fprint(s.out, "\r\033[K") // carriage return + clear to end of line
+	<-s.done // wait for the goroutine to stop writing
+	fmt.Fprintf(s.out, "\r%s\r", strings.Repeat(" ", s.width()))
 	s.stop, s.done = nil, nil
+}
+
+// width is how many columns one frame occupies: a spinner rune, a space, then
+// the label. Counted in runes — the label is UTF-8 and every glyph the spinner
+// draws is single-width.
+func (s *spinner) width() int {
+	return utf8.RuneCountInString(s.label) + 2
 }
 
 // isTerminal reports whether w is a character device, i.e. an interactive

@@ -6,6 +6,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // syncBuf is a goroutine-safe buffer so the -race detector stays quiet while the
@@ -44,9 +45,20 @@ func TestSpinnerAnimatesAndClears(t *testing.T) {
 	if strings.Count(out, "thinking…") < 2 {
 		t.Fatalf("expected multiple animation frames, got %d", strings.Count(out, "thinking…"))
 	}
-	if !strings.HasSuffix(out, "\r\033[K") {
-		t.Fatalf("expected the spinner line to be cleared on stop, got %q", out)
+	if !strings.HasSuffix(out, blankLine("thinking…")) {
+		t.Fatalf("expected the spinner line to be blanked on stop, got %q", out)
 	}
+	// No ANSI escapes: IDE consoles that honour \r still drop \033[K, and the
+	// leftover frame is exactly what that would strand on screen.
+	if strings.Contains(out, "\033[") {
+		t.Fatalf("spinner must not depend on ANSI escapes, got %q", out)
+	}
+}
+
+// blankLine is what Stop writes to wipe a frame: return, spaces wide enough to
+// cover "<rune><space><label>", return again.
+func blankLine(label string) string {
+	return "\r" + strings.Repeat(" ", utf8.RuneCountInString(label)+2) + "\r"
 }
 
 // On a non-terminal writer the spinner must stay silent, so piped output and

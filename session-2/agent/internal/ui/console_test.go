@@ -6,8 +6,9 @@ import (
 	"testing"
 )
 
-// clearLine is what the spinner emits to wipe its own line.
-const clearLine = "\r\033[K"
+// clearLine is what the spinner emits to wipe its own line before anything else
+// prints. It uses spaces, not ANSI, so it survives consoles that drop \033[K.
+var clearLine = blankLine("thinking…")
 
 // newTestConsole builds a Console whose spinner is force-enabled (the test
 // buffer isn't a TTY) and already running, i.e. exactly the state the console
