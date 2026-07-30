@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -20,7 +21,25 @@ type spinner struct {
 }
 
 func newSpinner(out io.Writer, label string) *spinner {
-	return &spinner{out: out, label: label, enabled: isTerminal(out)}
+	return &spinner{out: out, label: label, enabled: spinnerEnabled(out)}
+}
+
+// spinnerEnabled decides whether to animate at all.
+//
+// The default is "only on a real terminal", which keeps carriage-return frames
+// out of pipes and test buffers. But that check also reports false in an IDE
+// run window (GoLand's Run tool window, VS Code's debug console), which hands
+// the process a pipe even though a human is sitting there watching — the one
+// case where the detection is right about the plumbing and wrong about the
+// audience. AGENT_SPINNER overrides it in either direction.
+func spinnerEnabled(w io.Writer) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("AGENT_SPINNER"))) {
+	case "1", "true", "on", "always", "yes":
+		return true
+	case "0", "false", "off", "never", "no":
+		return false
+	}
+	return isTerminal(w)
 }
 
 // Start begins the animation in a background goroutine. A second call before

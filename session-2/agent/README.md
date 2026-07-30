@@ -62,9 +62,12 @@ Key seams (interfaces):
   console animates a one-line indicator while it waits instead of leaving the
   terminal dead. Everything that prints mid-turn (tool lines, compaction
   notices, the approval prompt) stops the spinner first and restarts it after,
-  so a frame never lands on top of real output. It draws only to a terminal —
-  on a pipe or a test buffer it's a no-op, keeping captured output free of
-  carriage-return noise — `ui/spinner.go`, `ui/console.go`.
+  so a frame never lands on top of real output. By default it draws only to a
+  terminal, so a pipe or a test buffer gets nothing and captured output stays
+  free of carriage-return noise. **An IDE run window (GoLand's Run tool window,
+  VS Code's debug console) is a pipe, not a terminal, so the spinner disables
+  itself there** — set `AGENT_SPINNER=1` to force it on (or `=0` to force it
+  off anywhere) — `ui/spinner.go`, `ui/console.go`.
 - **History compaction** — every `CompactEvery` questions (default 5), the agent
   folds the older part of the conversation into one summary message and keeps the
   system prompt and the most recent turn verbatim. This caps per-request token

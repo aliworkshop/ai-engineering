@@ -52,12 +52,50 @@ func TestSpinnerAnimatesAndClears(t *testing.T) {
 // On a non-terminal writer the spinner must stay silent, so piped output and
 // captured test logs never fill with carriage-return noise.
 func TestSpinnerNoopOnNonTerminal(t *testing.T) {
+	t.Setenv("AGENT_SPINNER", "") // ignore whatever the developer has set
 	buf := &syncBuf{}
 	s := newSpinner(buf, "thinking…") // bytes-backed writer → not a terminal
 	s.Start()
 	s.Stop()
 	if got := buf.String(); got != "" {
 		t.Fatalf("expected no output on a non-terminal, got %q", got)
+	}
+}
+
+// AGENT_SPINNER overrides the terminal detection both ways — the escape hatch
+// for IDE run windows, which are pipes with a human watching.
+func TestSpinnerEnvOverride(t *testing.T) {
+	buf := &syncBuf{}
+
+	for _, on := range []string{"1", "true", "on", "always", "yes", "YES"} {
+		t.Setenv("AGENT_SPINNER", on)
+		if !spinnerEnabled(buf) {
+			t.Errorf("AGENT_SPINNER=%q should force the spinner on", on)
+		}
+	}
+	for _, off := range []string{"0", "false", "off", "never", "no"} {
+		t.Setenv("AGENT_SPINNER", off)
+		if spinnerEnabled(buf) {
+			t.Errorf("AGENT_SPINNER=%q should force the spinner off", off)
+		}
+	}
+	// Unset or unrecognized falls back to detecting a terminal, and a buffer
+	// isn't one.
+	for _, fallback := range []string{"", "maybe"} {
+		t.Setenv("AGENT_SPINNER", fallback)
+		if spinnerEnabled(buf) {
+			t.Errorf("AGENT_SPINNER=%q should fall back to terminal detection", fallback)
+		}
+	}
+
+	// Forced on, it really does animate to a plain buffer.
+	t.Setenv("AGENT_SPINNER", "1")
+	s := newSpinner(buf, "thinking…")
+	s.Start()
+	time.Sleep(120 * time.Millisecond)
+	s.Stop()
+	if !strings.Contains(buf.String(), "thinking…") {
+		t.Fatalf("expected frames when forced on, got %q", buf.String())
 	}
 }
 
