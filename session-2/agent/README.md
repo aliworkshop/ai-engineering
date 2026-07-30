@@ -47,7 +47,7 @@ Key seams (interfaces):
 | # | Requirement | Where |
 |---|---|---|
 | 1 | Answer from own knowledge (no tool) | `agent.SystemPrompt` + loop returns when there are no tool calls — `agent/agent.go` |
-| 2 | Search the web | `WebSearch` (Tavily if `TAVILY_API_KEY` set, else DuckDuckGo) — `tools/search.go` |
+| 2 | Search the web | `WebSearch` (Tavily if `TAVILY_API_KEY` set, else DuckDuckGo) — `tools/search.go`; `NativeWebSearch` (OpenRouter's own web plugin) — `tools/nativesearch.go` |
 | 3 | Write scripts and run them | `WriteFile` + `RunCommand` + `ReadFile` — `tools/files.go`, `tools/shell.go` |
 | 4 | Edit existing files | `ReadFile` + `EditFile` — `tools/files.go` |
 | 5 | Human-in-the-loop before danger | `Approver` gate on write/edit/delete/run — `tools/*.go`, `ui/console.go` |
@@ -55,6 +55,15 @@ Key seams (interfaces):
 
 ## Beyond the six
 
+- **`openrouter_web_search`** — search through OpenRouter instead of a
+  third-party search API. OpenRouter models search as a *plugin* on a chat
+  request, so the tool sends the query as a one-off completion with the `web`
+  plugin attached; OpenRouter runs the search, injects the hits into that
+  request's prompt, and the model writes the findings back. The result is an
+  already-summarized answer with source URLs — versus `web_search`, which
+  returns raw ranked results — at the cost of one extra model call. Needs no
+  extra key (it bills to `OPENROUTER_API_KEY`), and it's only registered when
+  `tools.Default` is given `WithOpenRouterSearch` — `tools/nativesearch.go`.
 - **`get_weather`** — current temperature and wind for a place, via Open-Meteo's
   free, keyless APIs (geocode the name, then fetch conditions). Read-only, no
   approval — `tools/weather.go`.

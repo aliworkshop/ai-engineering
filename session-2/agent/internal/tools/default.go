@@ -4,24 +4,58 @@ import (
 	"net/http"
 	"os"
 	"time"
+
+	openrouter "github.com/OpenRouterTeam/go-sdk"
 )
+
+// Option tweaks the default toolset. Options exist for tools that need
+// something Default can't build on its own — an authenticated API client, say —
+// so callers that don't have one (tests, mostly) can keep calling Default with
+// just an approver.
+type Option func(*settings)
+
+type settings struct {
+	searchClient *openrouter.OpenRouter
+	searchModel  string
+}
+
+// WithOpenRouterSearch enables the openrouter_web_search tool, which searches
+// through OpenRouter's own web plugin and therefore needs an authenticated
+// client. Without this option that tool simply isn't advertised to the model.
+func WithOpenRouterSearch(client *openrouter.OpenRouter, model string) Option {
+	return func(s *settings) {
+		s.searchClient = client
+		s.searchModel = model
+	}
+}
 
 // Default builds the standard toolset, wiring the human-in-the-loop approver
 // into every dangerous tool. This is the single place that decides which tools
 // the agent has and which of them are gated.
-func Default(approver Approver) *Registry {
+func Default(approver Approver, opts ...Option) *Registry {
+	var s settings
+	for _, opt := range opts {
+		opt(&s)
+	}
 	client := &http.Client{Timeout: 15 * time.Second}
 
-	return NewRegistry(
-		// read-only — no approval
+	// read-only — no approval
+	list := []Tool{
 		ReadFile{},
 		WebSearch{HTTP: client, TavilyKey: os.Getenv("TAVILY_API_KEY")},
 		GetWeather{HTTP: client},
+	}
+	if s.searchClient != nil {
+		list = append(list, NativeWebSearch{Client: s.searchClient, Model: s.searchModel})
+	}
 
-		// dangerous — approval required
+	// dangerous — approval required
+	list = append(list,
 		WriteFile{Approver: approver},
 		EditFile{Approver: approver},
 		DeleteFile{Approver: approver},
 		RunCommand{Approver: approver},
 	)
+
+	return NewRegistry(list...)
 }

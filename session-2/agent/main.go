@@ -21,6 +21,11 @@ import (
 // Model is the OpenRouter model the agent talks to. gpt-4o-mini supports tools.
 const Model = "openai/gpt-4o-mini"
 
+// SearchModel writes up the results of openrouter_web_search. OpenRouter's web
+// plugin does the actual searching, so this model only has to summarize what it
+// is handed — a small one is plenty.
+const SearchModel = "openai/gpt-4o-mini"
+
 func main() {
 	loadEnv()
 
@@ -33,8 +38,12 @@ func main() {
 	// Wire the layers together: the console is the human approver, the tools use
 	// it to gate dangerous actions, and the agent drives the tools.
 	console := ui.New(os.Stdin, os.Stdout)
-	toolbox := tools.Default(console)
-	assistant := agent.New(llm.NewOpenRouter(apiKey), Model, toolbox)
+	client := llm.NewOpenRouter(apiKey)
+	// The OpenRouter search tool talks to the API itself, so it gets the same
+	// client. SearchModel only formats the hits the plugin returns, so it stays
+	// small and cheap regardless of which model the agent itself runs on.
+	toolbox := tools.Default(console, tools.WithOpenRouterSearch(client, SearchModel))
+	assistant := agent.New(client, Model, toolbox)
 
 	console.Run(context.Background(), assistant)
 }
