@@ -5,3 +5,4 @@ node_modules/
 .DS_Store
 canvas.svg
 canvas.excalidraw
+canvas.diagram.json

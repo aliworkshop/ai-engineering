@@ -114,14 +114,15 @@ func TestGenerateDiagramRedrawOverwrites(t *testing.T) {
 		t.Fatal("stale content from the previous diagram survived the redraw")
 	}
 
-	// Exactly the two files the tool owns, no accumulating per-draw clutter.
+	// Exactly the three files the tool owns — two renderings plus the spec
+	// modify_diagram edits — with no accumulating per-draw clutter.
 	entries, _ := os.ReadDir(dir)
 	got := map[string]bool{}
 	for _, e := range entries {
 		got[e.Name()] = true
 	}
-	if len(entries) != 2 || !got[canvasFile] || !got[excalidrawFile] {
-		t.Fatalf("expected exactly %s and %s, got %v", canvasFile, excalidrawFile, entries)
+	if len(entries) != 3 || !got[canvasFile] || !got[excalidrawFile] || !got[specFile] {
+		t.Fatalf("expected exactly %s, %s and %s, got %v", canvasFile, excalidrawFile, specFile, entries)
 	}
 }
 

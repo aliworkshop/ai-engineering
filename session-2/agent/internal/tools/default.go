@@ -47,6 +47,7 @@ func Default(approver Approver, opts ...Option) *Registry {
 		ReadFile{},
 		GetWeather{HTTP: client},
 		GenerateDiagram{},
+		ModifyDiagram{},
 	}
 	if s.searchClient != nil {
 		list = append(list, NativeWebSearch{Client: s.searchClient, Model: s.searchModel})

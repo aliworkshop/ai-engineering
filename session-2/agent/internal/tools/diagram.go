@@ -117,34 +117,55 @@ func (t GenerateDiagram) Run(ctx context.Context, args string) (string, error) {
 		}
 	}
 
-	nodes, edges, err := buildDiagram(elements)
+	boxes, arrows, err := drawDiagram(t.Dir, diagramSpec{Title: a.Title, Elements: elements})
 	if err != nil {
 		// Returned as an error so Dispatch hands the model readable text it can
 		// act on — a mistyped id is worth one retry, not a dead end.
 		return "", err
 	}
+	return fmt.Sprintf("Drew %d boxes and %d arrows.\n%s", boxes, arrows, canvasLocations(t.Dir)), nil
+}
 
-	width, height := layoutDiagram(nodes, edges, a.Title != "")
-
-	// Two files from one layout, so they can never disagree about the picture.
-	// The SVG is the refresh-in-a-browser view; the .excalidraw scene is the
-	// editable one you drag onto excalidraw.com.
-	svgPath := filepath.Join(t.Dir, canvasFile)
-	if err := os.WriteFile(svgPath, []byte(renderSVG(a.Title, nodes, edges, width, height)), 0o644); err != nil {
-		return "", err
-	}
-
-	scene, err := renderExcalidraw(a.Title, nodes, edges)
+// drawDiagram validates a spec, lays it out, and writes all three files: the
+// SVG to refresh in a browser, the Excalidraw scene to edit by hand, and the
+// spec itself so modify_diagram has something to change later.
+//
+// Both tools go through here, which is what keeps a modified diagram identical
+// to one drawn from scratch with the same elements.
+func drawDiagram(dir string, spec diagramSpec) (boxes, arrows int, err error) {
+	nodes, edges, err := buildDiagram(spec.Elements)
 	if err != nil {
-		return "", err
-	}
-	scenePath := filepath.Join(t.Dir, excalidrawFile)
-	if err := os.WriteFile(scenePath, []byte(scene), 0o644); err != nil {
-		return "", err
+		return 0, 0, err
 	}
 
-	return fmt.Sprintf("Drew %d boxes and %d arrows.\n%s — open in a browser, refresh after each redraw.\n%s — open at excalidraw.com (File → Open, or drag it onto the canvas) to edit it by hand.",
-		len(nodes), len(edges), absPath(svgPath), absPath(scenePath)), nil
+	width, height := layoutDiagram(nodes, edges, spec.Title != "")
+
+	// Two renderings from one layout, so they can never disagree about the
+	// picture — only the serialization differs.
+	if err := os.WriteFile(filepath.Join(dir, canvasFile),
+		[]byte(renderSVG(spec.Title, nodes, edges, width, height)), 0o644); err != nil {
+		return 0, 0, err
+	}
+
+	scene, err := renderExcalidraw(spec.Title, nodes, edges)
+	if err != nil {
+		return 0, 0, err
+	}
+	if err := os.WriteFile(filepath.Join(dir, excalidrawFile), []byte(scene), 0o644); err != nil {
+		return 0, 0, err
+	}
+
+	// Saved last, and only once the renders succeeded, so the spec on disk
+	// always describes the picture that's actually there.
+	if err := saveSpec(dir, spec); err != nil {
+		return 0, 0, err
+	}
+	return len(nodes), len(edges), nil
+}
+
+func canvasLocations(dir string) string {
+	return fmt.Sprintf("%s — open in a browser, refresh after each redraw.\n%s — open at excalidraw.com (File → Open, or drag it onto the canvas) to edit it by hand.",
+		absPath(filepath.Join(dir, canvasFile)), absPath(filepath.Join(dir, excalidrawFile)))
 }
 
 // absPath reports the file's absolute location so the agent can hand the user

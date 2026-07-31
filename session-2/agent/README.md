@@ -53,6 +53,7 @@ Key seams (interfaces):
 | 5 | Human-in-the-loop before danger | `Approver` gate on write/edit/delete/run — `tools/*.go`, `ui/console.go` |
 | 6 | Eval suite | `tools/tools_test.go` + `agent/eval_test.go` + `agent/eval_single_test.go` |
 | 7 | Draw a diagram from a prompt | `GenerateDiagram` → `canvas.svg` + `canvas.excalidraw` — `tools/diagram.go`, `tools/excalidraw.go` |
+| 8 | Change one element of it | `ModifyDiagram` — `tools/modify.go` |
 
 ## Beyond the six
 
@@ -66,6 +67,14 @@ Key seams (interfaces):
   asking a model for pixel geometry reliably produces overlapping boxes and
   crossed arrows. Placement is the tool's job — see **Diagram layout** below —
   `tools/diagram.go`.
+- **`modify_diagram`** — change one element of the diagram already on the
+  canvas — a label, a shape, where an arrow points — and redraw, instead of
+  restating the whole picture for a one-word edit. Boxes are addressed by their
+  id, arrows by `"from->to"` (`"validate->create"`), since arrows have no ids of
+  their own. The edit is applied to a copy and only committed once the redraw
+  succeeds, so a change that would break the diagram — repointing an arrow at a
+  box that doesn't exist — leaves the canvas and the saved spec untouched —
+  `tools/modify.go`.
 - **`get_weather`** — current temperature and wind for a place, via Open-Meteo's
   free, keyless APIs (geocode the name, then fetch conditions). Read-only, no
   approval — `tools/weather.go`.
@@ -113,8 +122,10 @@ go test ./... -short     # fast, offline, deterministic (no key, no network)
   off a terminal, and the console pauses it before printing mid-turn.
 - **`tools` package** — unit evals: script roundtrip, edit, denial blocks the
   action, read-only tools never prompt, unknown tool handled, live web search,
-  the diagram tool (valid SVG on disk, no overlap, cycles, bad input), and the
-  Excalidraw scene (envelope, element counts, bindings resolve, determinism).
+  the diagram tool (valid SVG on disk, no overlap, cycles, bad input), the
+  Excalidraw scene (envelope, element counts, bindings resolve, determinism),
+  and one-element edits (label, shape, arrow repoint, atomic rollback on a
+  breaking change, spec round-trips to the same drawing).
 - **`agent` package** — live evals (skipped with `-short` or without a key):
   - *behavioral* (`eval_test.go`) — whole tasks through the real model, graded
     on which tools it chose, its answer, and the actual side effects on disk.
@@ -144,6 +155,16 @@ goes, then writes one self-contained SVG.
 Shapes follow flowchart convention: `ellipse` for start/end, `diamond` for a
 decision, `box` for a step. The SVG has no external references and carries a
 `prefers-color-scheme` block, so it renders standalone in light or dark mode.
+
+### The spec file
+
+`generate_diagram` also writes `canvas.diagram.json`: the elements it drew from.
+That file is what makes `modify_diagram` possible — without it, changing one
+label would mean handing the tool the entire diagram again, which is just
+`generate_diagram` with extra steps. Both tools render through the same path, so
+a modified diagram is identical to one drawn from scratch with the same
+elements, and the spec is saved last, only after both renders succeed, so what's
+on disk always describes the picture that's actually there.
 
 ### Two files, one layout
 
