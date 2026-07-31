@@ -42,7 +42,7 @@ Key seams (interfaces):
 - **`tools.Tool`** — one capability. Add a feature by writing one struct with
   `Spec()` + `Run()` and listing it in `tools.Default`.
 
-## The 6 requirements → where they live
+## The requirements → where they live
 
 | # | Requirement | Where |
 |---|---|---|
@@ -52,9 +52,20 @@ Key seams (interfaces):
 | 4 | Edit existing files | `ReadFile` + `EditFile` — `tools/files.go` |
 | 5 | Human-in-the-loop before danger | `Approver` gate on write/edit/delete/run — `tools/*.go`, `ui/console.go` |
 | 6 | Eval suite | `tools/tools_test.go` + `agent/eval_test.go` + `agent/eval_single_test.go` |
+| 7 | Draw a diagram from a prompt | `GenerateDiagram` → `canvas.svg` + `canvas.excalidraw` — `tools/diagram.go`, `tools/excalidraw.go` |
 
 ## Beyond the six
 
+- **`generate_diagram`** — draw a whole diagram in one call from a prompt like
+  *"Draw a flowchart of user signup"*. Writes two files from one layout:
+  `canvas.svg` (open in a browser, refresh after each redraw) and
+  `canvas.excalidraw` (open at [excalidraw.com](https://excalidraw.com) to edit
+  it by hand). The model
+  passes only structure — boxes with ids and labels, arrows referencing those
+  ids — in a single `elements` array; **it never passes coordinates**, because
+  asking a model for pixel geometry reliably produces overlapping boxes and
+  crossed arrows. Placement is the tool's job — see **Diagram layout** below —
+  `tools/diagram.go`.
 - **`get_weather`** — current temperature and wind for a place, via Open-Meteo's
   free, keyless APIs (geocode the name, then fetch conditions). Read-only, no
   approval — `tools/weather.go`.
@@ -101,7 +112,9 @@ go test ./... -short     # fast, offline, deterministic (no key, no network)
 - **`ui` package** — spinner unit tests: it animates and clears, stays silent
   off a terminal, and the console pauses it before printing mid-turn.
 - **`tools` package** — unit evals: script roundtrip, edit, denial blocks the
-  action, read-only tools never prompt, unknown tool handled, live web search.
+  action, read-only tools never prompt, unknown tool handled, live web search,
+  the diagram tool (valid SVG on disk, no overlap, cycles, bad input), and the
+  Excalidraw scene (envelope, element counts, bindings resolve, determinism).
 - **`agent` package** — live evals (skipped with `-short` or without a key):
   - *behavioral* (`eval_test.go`) — whole tasks through the real model, graded
     on which tools it chose, its answer, and the actual side effects on disk.
@@ -111,6 +124,58 @@ go test ./... -short     # fast, offline, deterministic (no key, no network)
     history folds down to the system prompt, a summary, and the last turn.
 
   The behavioral and tool-selection evals print a scorecard.
+
+## Diagram layout (`tools/diagram.go`)
+
+The model says *what* connects to what; the tool decides *where* everything
+goes, then writes one self-contained SVG.
+
+1. **Layer** each box by its longest path from a starting box, so a flowchart
+   reads top to bottom. Back edges — the "invalid input, go back to the form"
+   arrow — are found by a depth-first walk and excluded from this step. They're
+   still drawn; they just don't get a vote on depth. Letting them vote stretched
+   an 8-box signup chart across 15 rows of mostly empty canvas.
+2. **Place** each layer as a centred row, boxes sized around their wrapped
+   labels, so nothing overlaps by construction.
+3. **Route** forward arrows bottom-to-top as bezier curves; back edges and
+   same-row hops bulge out to the right so they stay visible instead of cutting
+   through the boxes between.
+
+Shapes follow flowchart convention: `ellipse` for start/end, `diamond` for a
+decision, `box` for a step. The SVG has no external references and carries a
+`prefers-color-scheme` block, so it renders standalone in light or dark mode.
+
+### Two files, one layout
+
+Both outputs come from the same laid-out nodes and edges, so they can never
+disagree about the picture — only the serialization differs.
+
+| | `canvas.svg` | `canvas.excalidraw` |
+|---|---|---|
+| Open with | any browser | excalidraw.com (File → Open, or drag onto the canvas) |
+| Update loop | **refresh the page** | re-import after a redraw |
+| Editable | no | yes — drag boxes, retype labels, restyle |
+
+The scene uses Excalidraw's own palette and hand-drawn `roughness`, so it looks
+native rather than pasted in. Arrows carry `startBinding`/`endBinding`, which is
+what keeps them attached when you drag a box after importing; without bindings
+the scene loads as loose lines that drift off their boxes on the first edit.
+Element ids and per-element seeds are derived from a counter rather than random,
+so redrawing the same diagram is byte-identical and the hand-drawn jitter stays
+put instead of reshuffling.
+
+Nothing is uploaded: the file is written locally and you open it yourself. The
+tool never talks to excalidraw.com.
+
+Two things the tool is deliberately strict about, both learned from watching a
+real model call it:
+
+- It also reads a top-level `arrows` array. Models reach for one even though the
+  schema says otherwise, and silently dropping those arrows produced a page of
+  unconnected boxes *reported as a success*.
+- More than one box with no arrows at all is rejected rather than drawn, for the
+  same reason: a disconnected diagram is nearly always a caller mistake, and
+  failing tells the model to fix it.
 
 ## Web search
 

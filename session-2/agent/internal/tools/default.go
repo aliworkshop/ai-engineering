@@ -40,10 +40,13 @@ func Default(approver Approver, opts ...Option) *Registry {
 	}
 	client := &http.Client{Timeout: 15 * time.Second}
 
-	// read-only — no approval
+	// read-only — no approval. GenerateDiagram does write, but only ever to the
+	// one canvas.svg it owns, so it can't be steered into clobbering anything
+	// and doesn't need a y/n on every redraw.
 	list := []Tool{
 		ReadFile{},
 		GetWeather{HTTP: client},
+		GenerateDiagram{},
 	}
 	if s.searchClient != nil {
 		list = append(list, NativeWebSearch{Client: s.searchClient, Model: s.searchModel})

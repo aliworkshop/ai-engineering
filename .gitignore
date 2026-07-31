@@ -3,3 +3,5 @@ session-1/.env
 node_modules/
 .idea
 .DS_Store
+canvas.svg
+canvas.excalidraw
