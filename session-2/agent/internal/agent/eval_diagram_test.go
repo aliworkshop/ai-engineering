@@ -458,6 +458,7 @@ func TestEvalDiagramTools(t *testing.T) {
 	totals := map[string]float64{}
 	counts := map[string]int{}
 	var rows []string
+	passed := 0
 
 	for _, c := range cases {
 		c := c
@@ -478,6 +479,10 @@ func TestEvalDiagramTools(t *testing.T) {
 				t.Errorf("agent error: %v", r.err)
 			}
 
+			// A case passes when every scorer that applied to it cleared the
+			// bar. One bad dimension fails the case, the same way a wrong
+			// argument fails a tool-selection case.
+			ok := r.err == nil
 			var cells []string
 			for _, s := range scorers {
 				v := s.score(c, r)
@@ -496,15 +501,22 @@ func TestEvalDiagramTools(t *testing.T) {
 				counts[s.name]++
 				cells = append(cells, fmt.Sprintf("%s=%.2f", s.name, *v))
 				if *v < passingScore {
+					ok = false
 					t.Errorf("%s scored %.2f (below %.2f); tools used: %v", s.name, *v, passingScore, r.toolsUsed)
 				}
 			}
-			row := fmt.Sprintf("%-24s %s", c.name, strings.Join(cells, "  "))
+			if ok {
+				passed++
+			}
+			row := fmt.Sprintf("[%s] %-24s %s", passLabel(ok), c.name, strings.Join(cells, "  "))
 			rows = append(rows, row)
 			t.Logf("%s | tools: %v", row, r.toolsUsed)
 		})
 	}
 
+	// The scorecard is the point of the whole harness, so print it as a block:
+	// per-case verdicts, then the mean of each scorer over the cases it applied
+	// to, then the overall rate.
 	t.Log("SCORECARD")
 	for _, row := range rows {
 		t.Log("  " + row)
@@ -518,6 +530,8 @@ func TestEvalDiagramTools(t *testing.T) {
 		t.Logf("  mean %-12s %.2f  (%d/%d cases applied)",
 			name, totals[name]/float64(counts[name]), counts[name], len(cases))
 	}
+	t.Logf("SCORECARD: %d/%d diagram cases passed (%.0f%%)",
+		passed, len(cases), 100*float64(passed)/float64(len(cases)))
 }
 
 // seedCanvas draws the starting diagram for a modify case by calling the tool

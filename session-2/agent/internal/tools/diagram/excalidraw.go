@@ -57,6 +57,18 @@ func renderExcalidraw(title string, nodes []*diagramNode, edges []diagramEdge) (
 	}
 
 	for _, n := range nodes {
+		// Tables and charts expand into many primitives rather than one shape,
+		// so the result stays editable in the app — a cell you can click and
+		// retype, a bar you can drag taller.
+		switch n.kind {
+		case kindTable:
+			elements = append(elements, exTableElements(n, nextID)...)
+			continue
+		case kindChart:
+			elements = append(elements, exChartElements(n, nextID)...)
+			continue
+		}
+
 		boxID := nextID("shape")
 		textID := nextID("label")
 		idOf[n] = boxID
@@ -140,21 +152,59 @@ func exBase(id, typ string, x, y, w, h float64, seed int) map[string]any {
 // by role the same way the SVG is: green terminators, amber decisions, blue
 // steps.
 func exShape(id string, n *diagramNode, textID string) map[string]any {
-	typ, fill := "rectangle", exBlueFill
+	fill := exFillForClass(shapeClass(n.shape))
+
+	// Excalidraw has three closed primitives. Anything else is drawn as a
+	// closed "line" through the shape's own outline, which keeps it a real
+	// editable object — every vertex is draggable after importing — rather than
+	// being flattened to the nearest rectangle.
+	typ := "rectangle"
+	var points [][]float64
 	switch n.shape {
-	case "ellipse":
-		typ, fill = "ellipse", exGreenFill
+	case "ellipse", "circle", "cloud":
+		typ = "ellipse"
 	case "diamond":
-		typ, fill = "diamond", exYellowFill
+		typ = "diamond"
+	default:
+		if pts := exShapePoints(n.shape, n.w, n.h); pts != nil {
+			typ, points = "line", pts
+		}
 	}
 
 	el := exBase(id, typ, n.x, n.y, n.w, n.h, exSeed(id))
 	el["backgroundColor"] = fill
-	if typ == "rectangle" {
-		el["roundness"] = map[string]any{"type": 3} // adaptive rounded corners
+	switch {
+	case points != nil:
+		el["points"] = points
+		el["lastCommittedPoint"] = nil
+		// A line can't carry bound text, so its label is emitted separately by
+		// the caller; leaving boundElements nil is what signals that.
+	case typ == "rectangle":
+		if n.shape == "pill" {
+			el["roundness"] = map[string]any{"type": 3}
+		} else {
+			el["roundness"] = map[string]any{"type": 3} // adaptive rounded corners
+		}
 	}
-	el["boundElements"] = []map[string]any{{"id": textID, "type": "text"}}
+	if points == nil {
+		el["boundElements"] = []map[string]any{{"id": textID, "type": "text"}}
+	}
 	return el
+}
+
+// exFillForClass keeps the Excalidraw palette in step with the SVG's role
+// colours, so a database is the same colour in both renderings.
+func exFillForClass(class string) string {
+	switch class {
+	case "term":
+		return exGreenFill
+	case "decide":
+		return exYellowFill
+	case "data":
+		return exVioletFill
+	default:
+		return exBlueFill
+	}
 }
 
 // exText builds a text element. A non-empty containerID binds it inside a

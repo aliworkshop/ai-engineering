@@ -47,6 +47,20 @@ type diagramElement struct {
 	Shape string `json:"shape"`
 	From  string `json:"from"`
 	To    string `json:"to"`
+
+	// Table payload. Columns is the header row; Rows are the body rows.
+	Columns []string   `json:"columns,omitempty"`
+	Rows    [][]string `json:"rows,omitempty"`
+
+	// Chart payload. Chart is the kind (bar / line / pie); Data is the series.
+	Chart string       `json:"chart,omitempty"`
+	Data  []chartDatum `json:"data,omitempty"`
+}
+
+// chartDatum is one labelled value in a chart series.
+type chartDatum struct {
+	Label string  `json:"label"`
+	Value float64 `json:"value"`
 }
 
 func (GenerateDiagram) Spec() components.ChatFunctionTool {
@@ -186,7 +200,23 @@ type diagramNode struct {
 	layer            int
 	order            int // position within its layer, for stable placement
 	x, y, w, h       float64
+
+	// kind selects the renderer: "shape" for a labelled outline, "table" for a
+	// grid, "chart" for a plot. Tables and charts are laid out as nodes like any
+	// other, so arrows can point at them and they take their place in the flow
+	// instead of needing a separate positioning pass.
+	kind    string
+	columns []string
+	rows    [][]string
+	chart   string
+	data    []chartDatum
 }
+
+const (
+	kindShape = "shape"
+	kindTable = "table"
+	kindChart = "chart"
+)
 
 // diagramEdge is an arrow between two laid-out boxes.
 type diagramEdge struct {
@@ -202,26 +232,43 @@ func buildDiagram(elements []diagramElement) ([]*diagramNode, []diagramEdge, err
 	var nodes []*diagramNode
 
 	for i, e := range elements {
-		if elementKind(e) != "box" {
+		kind := elementKind(e)
+		if kind == "arrow" || kind == "" {
 			continue
 		}
 		id := strings.TrimSpace(e.ID)
 		if id == "" {
-			return nil, nil, fmt.Errorf("elements[%d] is a box with no id; every box needs a unique id for arrows to reference", i)
+			return nil, nil, fmt.Errorf("elements[%d] is a %s with no id; every node needs a unique id for arrows to reference", i, kind)
 		}
 		if _, dup := byID[id]; dup {
-			return nil, nil, fmt.Errorf("duplicate box id %q; ids must be unique", id)
+			return nil, nil, fmt.Errorf("duplicate id %q; ids must be unique", id)
 		}
 		label := strings.TrimSpace(e.Label)
-		if label == "" {
+		if label == "" && kind == "box" {
 			label = id
 		}
-		n := &diagramNode{id: id, label: label, shape: normalizeShape(e.Shape), lines: wrapLabel(label, 20)}
+
+		n := &diagramNode{id: id, label: label, lines: wrapLabel(label, 20)}
+		switch kind {
+		case kindTable:
+			n.kind, n.columns, n.rows = kindTable, e.Columns, e.Rows
+			if err := validateTable(i, n); err != nil {
+				return nil, nil, err
+			}
+		case kindChart:
+			n.kind, n.chart, n.data = kindChart, normalizeChart(e.Chart), e.Data
+			if err := validateChart(i, n); err != nil {
+				return nil, nil, err
+			}
+		default:
+			n.kind, n.shape = kindShape, normalizeShape(e.Shape)
+		}
+
 		byID[id] = n
 		nodes = append(nodes, n)
 	}
 	if len(nodes) == 0 {
-		return nil, nil, fmt.Errorf("no boxes in elements; a diagram needs at least one element with type \"box\"")
+		return nil, nil, fmt.Errorf("nothing to draw; elements needs at least one \"box\", \"table\" or \"chart\"")
 	}
 
 	var edges []diagramEdge
@@ -242,11 +289,14 @@ func buildDiagram(elements []diagramElement) ([]*diagramNode, []diagramEdge, err
 		edges = append(edges, diagramEdge{from: from, to: to, label: strings.TrimSpace(e.Label)})
 	}
 
-	// A multi-box diagram with nothing joining it is almost always a caller that
-	// put its arrows somewhere this tool didn't look. Drawing it anyway produces
-	// a page of loose boxes reported as a success, which is worse than failing:
-	// say so and let the model correct itself.
-	if len(nodes) > 1 && len(edges) == 0 {
+	// A multi-box flowchart with nothing joining it is almost always a caller
+	// that put its arrows somewhere this tool didn't look. Drawing it anyway
+	// produces a page of loose boxes reported as a success, which is worse than
+	// failing: say so and let the model correct itself.
+	//
+	// Tables and charts are exempt — two tables side by side is a perfectly good
+	// canvas, and demanding an arrow between them would be nonsense.
+	if len(nodes) > 1 && len(edges) == 0 && allShapes(nodes) {
 		return nil, nil, fmt.Errorf("%d boxes but no arrows, so nothing would be connected; put the arrows in the same `elements` array as the boxes, each as {\"type\":\"arrow\",\"from\":\"<id>\",\"to\":\"<id>\"}", len(nodes))
 	}
 	return nodes, edges, nil
@@ -281,15 +331,16 @@ func sortedIDs(byID map[string]*diagramNode) []string {
 	return ids
 }
 
-func normalizeShape(s string) string {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "ellipse", "oval", "round", "terminator":
-		return "ellipse"
-	case "diamond", "decision", "rhombus":
-		return "diamond"
-	default:
-		return "box"
+// allShapes reports whether the canvas is nothing but plain flowchart nodes —
+// the only case where "no arrows" is a caller mistake rather than a legitimate
+// layout.
+func allShapes(nodes []*diagramNode) bool {
+	for _, n := range nodes {
+		if n.kind != kindShape {
+			return false
+		}
 	}
+	return true
 }
 
 // Layout geometry. Everything is in SVG user units (≈ CSS pixels).
@@ -440,9 +491,17 @@ func findBackEdges(nodes []*diagramNode, edges []diagramEdge) map[int]bool {
 	return back
 }
 
-// boxSize sizes a box around its wrapped label. Diamonds need noticeably more
-// room than their text because the corners eat the horizontal space.
+// boxSize sizes a node. Tables and charts are measured from their content;
+// a shape is sized around its wrapped label and then corrected for the geometry,
+// since a diamond's corners eat horizontal space its text can't use.
 func boxSize(n *diagramNode) (float64, float64) {
+	switch n.kind {
+	case kindTable:
+		return tableSize(n)
+	case kindChart:
+		return chartSize(n)
+	}
+
 	longest := 0
 	for _, line := range n.lines {
 		if c := utf8.RuneCountInString(line); c > longest {
@@ -455,14 +514,8 @@ func boxSize(n *diagramNode) (float64, float64) {
 	}
 	h := float64(len(n.lines))*lineHeight + 30
 
-	switch n.shape {
-	case "diamond":
-		return w * 1.5, h * 1.7
-	case "ellipse":
-		return w * 1.15, h * 1.15
-	default:
-		return w, h
-	}
+	wMul, hMul := shapeAspect(n.shape)
+	return w * wMul, h * hMul
 }
 
 // wrapLabel breaks a label into at most three lines of roughly max characters,
@@ -513,15 +566,41 @@ func renderSVG(title string, nodes []*diagramNode, edges []diagramEdge, width, h
   .edge   { stroke: #5a6b85; stroke-width: 2; fill: none; }
   .edgetx { fill: #40506b; font: 12px -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
   .edgebg { fill: #ffffff; }
+  .data   { fill: #f3eefe; stroke: #7a52cc; stroke-width: 2; }
+  .fold   { fill: #ddd0f7; stroke: #7a52cc; stroke-width: 1.5; }
+  /* tables */
+  .tgrid     { fill: none; stroke: #9aa7bd; stroke-width: 1.5; }
+  .thead     { fill: #eef4ff; }
+  .trule     { stroke: #c3cddd; stroke-width: 1; }
+  .tcell     { fill: #14243d; font: 13px -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
+  .thcell    { fill: #14243d; font: 600 13px -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
+  .tabletitle{ fill: #14243d; font: 600 15px -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
+  /* charts */
+  .charttitle{ fill: #14243d; font: 600 15px -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
+  .axis      { stroke: #9aa7bd; stroke-width: 1.5; }
+  .chartval  { fill: #40506b; font: 11px -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
+  .chartcat  { fill: #40506b; font: 12px -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
+  .chartline { fill: none; stroke: #3b6bd6; stroke-width: 2.5; }
+  .chartdot  { fill: #3b6bd6; }
+  .c1 { fill: #4f83e0; } .c2 { fill: #58b368; } .c3 { fill: #e0a444; }
+  .c4 { fill: #d96d6d; } .c5 { fill: #9a7ae0; } .c6 { fill: #4bb3c4; }
   @media (prefers-color-scheme: dark) {
     .bg     { fill: #12161d; }
     .shape  { fill: #1b2942; stroke: #6f9bf0; }
     .decide { fill: #33270f; stroke: #e0a444; }
     .term   { fill: #12301f; stroke: #56c98a; }
+    .data   { fill: #241b3d; stroke: #a98bf0; }
+    .fold   { fill: #35296b; stroke: #a98bf0; }
     .label, .title { fill: #e7edf7; }
     .edge   { stroke: #93a3bd; }
     .edgetx { fill: #b9c6db; }
     .edgebg { fill: #12161d; }
+    .tgrid  { stroke: #66748c; }
+    .thead  { fill: #1b2942; }
+    .trule  { stroke: #3a465a; }
+    .tcell, .thcell, .tabletitle, .charttitle { fill: #e7edf7; }
+    .chartval, .chartcat { fill: #b9c6db; }
+    .axis   { stroke: #66748c; }
   }
 </style>
 <defs>
@@ -550,23 +629,21 @@ func renderSVG(title string, nodes []*diagramNode, edges []diagramEdge, width, h
 	return b.String()
 }
 
+// renderNode draws one node, dispatching on its kind. Tables and charts own
+// their whole bounding box; a shape gets an outline plus a centred label.
 func renderNode(n *diagramNode) string {
-	var b strings.Builder
-	cx, cy := n.x+n.w/2, n.y+n.h/2
-
-	switch n.shape {
-	case "ellipse":
-		fmt.Fprintf(&b, `<ellipse class="term" cx="%.1f" cy="%.1f" rx="%.1f" ry="%.1f"/>`+"\n",
-			cx, cy, n.w/2, n.h/2)
-	case "diamond":
-		fmt.Fprintf(&b, `<polygon class="decide" points="%.1f,%.1f %.1f,%.1f %.1f,%.1f %.1f,%.1f"/>`+"\n",
-			cx, n.y, n.x+n.w, cy, cx, n.y+n.h, n.x, cy)
-	default:
-		fmt.Fprintf(&b, `<rect class="shape" x="%.1f" y="%.1f" width="%.1f" height="%.1f" rx="8"/>`+"\n",
-			n.x, n.y, n.w, n.h)
+	switch n.kind {
+	case kindTable:
+		return renderTableSVG(n)
+	case kindChart:
+		return renderChartSVG(n)
 	}
 
+	var b strings.Builder
+	b.WriteString(shapeSVG(n))
+
 	// Vertically centre the block of wrapped lines on the shape's middle.
+	cx, cy := n.x+n.w/2, n.y+n.h/2
 	startY := cy - (float64(len(n.lines)-1)*lineHeight)/2 + 5
 	for i, line := range n.lines {
 		fmt.Fprintf(&b, `<text class="label" x="%.1f" y="%.1f" text-anchor="middle">%s</text>`+"\n",
