@@ -19,8 +19,8 @@ import (
 
 	"github.com/joho/godotenv"
 
-	"no_tools/agent/internal/llm"
-	"no_tools/agent/internal/tools"
+	"github.com/aliworkshop/ai-engineering-course/session-1/agent/internal/llm"
+	"github.com/aliworkshop/ai-engineering-course/session-1/agent/internal/tools"
 )
 
 const evalModel = "openai/gpt-4o-mini"

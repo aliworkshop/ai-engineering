@@ -10,8 +10,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"ai-course/session-2/agent/internal/toolspec"
 	"github.com/OpenRouterTeam/go-sdk/models/components"
+	"github.com/aliworkshop/ai-engineering-course/session-2/agent/internal/toolspec"
 )
 
 // GenerateDiagram draws a whole diagram in one call and writes it to an SVG the
@@ -129,7 +129,7 @@ func (t GenerateDiagram) Run(ctx context.Context, args string) (string, error) {
 
 // drawDiagram validates a spec, lays it out, and writes all three files: the
 // SVG to refresh in a browser, the Excalidraw scene to edit by hand, and the
-// spec itself so modify_diagram has something to change later.
+// spec itself so the CRUD tools have something to change later.
 //
 // Both tools go through here, which is what keeps a modified diagram identical
 // to one drawn from scratch with the same elements.

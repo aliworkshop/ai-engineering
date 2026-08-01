@@ -26,8 +26,8 @@ import (
 	openrouter "github.com/OpenRouterTeam/go-sdk"
 	"github.com/OpenRouterTeam/go-sdk/models/components"
 
-	"ai-course/session-2/agent/internal/llm"
-	"ai-course/session-2/agent/internal/tools"
+	"github.com/aliworkshop/ai-engineering-course/session-2/agent/internal/llm"
+	"github.com/aliworkshop/ai-engineering-course/session-2/agent/internal/tools"
 )
 
 // selectionCase is one prompt and the exact set of tools we expect the model to

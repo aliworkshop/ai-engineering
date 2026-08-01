@@ -10,7 +10,7 @@ import (
 	"io"
 	"strings"
 
-	"no_tools/agent/internal/agent"
+	"github.com/aliworkshop/ai-engineering-course/session-1/agent/internal/agent"
 )
 
 // Console reads from one input stream and writes to one output stream.

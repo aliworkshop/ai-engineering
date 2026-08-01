@@ -6,8 +6,8 @@ package tools
 import (
 	"context"
 
-	"ai-course/session-2/agent/internal/toolspec"
 	"github.com/OpenRouterTeam/go-sdk/models/components"
+	"github.com/aliworkshop/ai-engineering-course/session-2/agent/internal/toolspec"
 )
 
 // Approver is the human-in-the-loop gate. A dangerous tool must get a "yes"

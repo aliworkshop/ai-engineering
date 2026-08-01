@@ -115,7 +115,7 @@ func TestGenerateDiagramRedrawOverwrites(t *testing.T) {
 	}
 
 	// Exactly the three files the tool owns — two renderings plus the spec
-	// modify_diagram edits — with no accumulating per-draw clutter.
+	// the CRUD tools edit — with no accumulating per-draw clutter.
 	entries, _ := os.ReadDir(dir)
 	got := map[string]bool{}
 	for _, e := range entries {
