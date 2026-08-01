@@ -9,5 +9,6 @@ canvas.excalidraw
 canvas.diagram.json
 canvas.skeleton.json
 
-# built by the excalidraw renderer's npm install
+# produced by the excalidraw renderer's npm install
 excalidraw-bundle.cjs
+package-lock.json
