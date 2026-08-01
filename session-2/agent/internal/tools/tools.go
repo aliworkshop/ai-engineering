@@ -5,8 +5,8 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
 
+	"ai-course/session-2/agent/internal/toolspec"
 	"github.com/OpenRouterTeam/go-sdk/models/components"
 )
 
@@ -71,32 +71,14 @@ func (r *Registry) Dispatch(ctx context.Context, name, args string) string {
 	return result
 }
 
-// defineTool builds a function-tool spec from a JSON-Schema string. The SDK
-// wants parameters as a decoded object, so we unmarshal the schema here — the
-// schemas are compile-time constants, so a parse failure is a programming error
-// and we panic rather than surface it at runtime. Keeps each Spec() a one-liner.
+// defineTool and decode are the package-local spellings of the shared helpers.
+// They live in toolspec so the diagram tools — which sit in a sub-package this
+// one imports, and so can't import back — reach the same code instead of a
+// second copy of it.
 func defineTool(name, description, schema string) components.ChatFunctionTool {
-	var params map[string]any
-	if err := json.Unmarshal([]byte(schema), &params); err != nil {
-		panic("tools: invalid JSON schema for " + name + ": " + err.Error())
-	}
-	desc := description
-	return components.CreateChatFunctionToolChatFunctionToolFunction(
-		components.ChatFunctionToolFunction{
-			Type: components.ChatFunctionToolTypeFunction,
-			Function: components.ChatFunctionToolFunctionFunction{
-				Name:        name,
-				Description: &desc,
-				Parameters:  params,
-			},
-		},
-	)
+	return toolspec.Define(name, description, schema)
 }
 
-// decode unmarshals the model's JSON arguments into a typed struct.
 func decode(args string, into any) error {
-	if args == "" {
-		return nil
-	}
-	return json.Unmarshal([]byte(args), into)
+	return toolspec.Decode(args, into)
 }

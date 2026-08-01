@@ -1,4 +1,4 @@
-package tools
+package diagram
 
 import (
 	"encoding/json"

@@ -42,7 +42,7 @@ Rules:
 
 // maxSteps caps how many tool rounds the model may take before we force a stop,
 // so a misbehaving model can't loop forever.
-const maxSteps = 12
+const maxSteps = 10
 
 // defaultCompactEvery is how many completed questions trigger a history
 // compaction. Left unbounded, the conversation — every question, answer, tool

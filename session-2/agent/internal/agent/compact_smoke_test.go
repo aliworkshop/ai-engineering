@@ -7,8 +7,8 @@ import (
 
 	"github.com/joho/godotenv"
 
-	"agent/internal/llm"
-	"agent/internal/tools"
+	"ai-course/session-2/agent/internal/llm"
+	"ai-course/session-2/agent/internal/tools"
 )
 
 func TestCompactionShrinksHistory(t *testing.T) {

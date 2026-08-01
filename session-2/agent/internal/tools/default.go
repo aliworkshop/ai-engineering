@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"time"
 
+	"ai-course/session-2/agent/internal/tools/diagram"
 	openrouter "github.com/OpenRouterTeam/go-sdk"
 )
 
@@ -46,8 +47,8 @@ func Default(approver Approver, opts ...Option) *Registry {
 	list := []Tool{
 		ReadFile{},
 		GetWeather{HTTP: client},
-		GenerateDiagram{},
-		ModifyDiagram{},
+		diagram.GenerateDiagram{},
+		diagram.ModifyDiagram{},
 	}
 	if s.searchClient != nil {
 		list = append(list, NativeWebSearch{Client: s.searchClient, Model: s.searchModel})

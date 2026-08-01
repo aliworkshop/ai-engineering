@@ -1,4 +1,4 @@
-package tools
+package diagram
 
 import (
 	"context"
@@ -10,6 +10,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"ai-course/session-2/agent/internal/toolspec"
 	"github.com/OpenRouterTeam/go-sdk/models/components"
 )
 
@@ -49,7 +50,7 @@ type diagramElement struct {
 }
 
 func (GenerateDiagram) Spec() components.ChatFunctionTool {
-	return defineTool("generate_diagram",
+	return toolspec.Define("generate_diagram",
 		"Draw a complete diagram (flowchart, sequence of steps, architecture sketch) in ONE call. Writes canvas.svg (open in a browser, refresh to see changes) and canvas.excalidraw (open at excalidraw.com to edit by hand). Boxes AND arrows all go in the single `elements` array — there is no separate arrows parameter. Do NOT pass coordinates; the tool lays the diagram out itself.",
 		`{
   "type": "object",
@@ -105,7 +106,7 @@ func (t GenerateDiagram) Run(ctx context.Context, args string) (string, error) {
 		Arrows []diagramElement `json:"arrows"`
 		Edges  []diagramElement `json:"edges"`
 	}
-	if err := decode(args, &a); err != nil {
+	if err := toolspec.Decode(args, &a); err != nil {
 		return "", err
 	}
 

@@ -10,7 +10,7 @@ import (
 	"io"
 	"strings"
 
-	"agent/internal/agent"
+	"ai-course/session-2/agent/internal/agent"
 )
 
 // Console reads from one input stream and writes to one output stream.
