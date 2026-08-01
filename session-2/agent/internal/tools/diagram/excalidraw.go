@@ -73,14 +73,25 @@ func renderExcalidraw(title string, nodes []*diagramNode, edges []diagramEdge) (
 		textID := nextID("label")
 		idOf[n] = boxID
 
-		elements = append(elements,
-			exShape(boxID, n, textID),
-			// A bound label carries containerId; Excalidraw then keeps it
-			// centred in the shape. Feed it the same line breaks the SVG uses,
-			// so both files break a long label in the same places instead of
-			// letting each renderer wrap it its own way.
-			exText(textID, strings.Join(n.lines, "\n"), n.x, n.y, exFontSize, "center", "middle", boxID),
-		)
+		shape := exShape(boxID, n, textID)
+		elements = append(elements, shape)
+
+		// A bound label carries containerId; Excalidraw then keeps it centred
+		// in the shape. Feed it the same line breaks the SVG uses, so both
+		// files break a long label in the same places instead of letting each
+		// renderer wrap it its own way.
+		//
+		// Line-drawn shapes (hexagon, cylinder, …) can't contain bound text, so
+		// their label is placed free-standing over the middle instead.
+		label := strings.Join(n.lines, "\n")
+		if shape["boundElements"] != nil {
+			elements = append(elements,
+				exText(textID, label, n.x, n.y, exFontSize, "center", "middle", boxID))
+		} else {
+			elements = append(elements,
+				exText(textID, label, n.x+n.w/2-float64(len(label))*3, n.y+n.h/2-10,
+					exFontSize, "center", "middle", ""))
+		}
 	}
 
 	for _, e := range edges {

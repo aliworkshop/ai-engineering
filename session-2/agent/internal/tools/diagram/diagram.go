@@ -65,7 +65,7 @@ type chartDatum struct {
 
 func (GenerateDiagram) Spec() components.ChatFunctionTool {
 	return toolspec.Define("generate_diagram",
-		"Draw a complete diagram (flowchart, sequence of steps, architecture sketch) in ONE call. Writes canvas.svg (open in a browser, refresh to see changes) and canvas.excalidraw (open at excalidraw.com to edit by hand). Boxes AND arrows all go in the single `elements` array — there is no separate arrows parameter. Do NOT pass coordinates; the tool lays the diagram out itself.",
+		"Draw anything visual in ONE call: flowcharts, architecture sketches, org charts, tables, and bar/line/pie charts. Writes canvas.svg (open in a browser, refresh to see changes) and canvas.excalidraw (open at excalidraw.com to edit by hand). Every element — boxes, arrows, tables, charts — goes in the single `elements` array; there is no separate arrows parameter. Do NOT pass coordinates or sizes; the tool lays everything out itself. Tables and charts can stand alone (no arrows needed) or sit in a flow with arrows pointing at them.",
 		`{
   "type": "object",
   "properties": {
@@ -75,30 +75,57 @@ func (GenerateDiagram) Spec() components.ChatFunctionTool {
     },
     "elements": {
       "type": "array",
-      "description": "Every box and arrow in the diagram, in one array.",
+      "description": "Every element of the drawing, in one array.",
       "items": {
         "type": "object",
         "properties": {
           "type": {
             "type": "string",
-            "enum": ["box", "arrow"],
-            "description": "'box' is a node; 'arrow' connects two boxes."
+            "enum": ["box", "arrow", "table", "chart"],
+            "description": "'box' is a labelled shape; 'arrow' connects two elements; 'table' is a grid of cells; 'chart' plots data."
           },
           "id": {
             "type": "string",
-            "description": "For a box: a short unique id other elements refer to, e.g. 'start'."
+            "description": "Unique id for a box, table or chart, so arrows can reference it, e.g. 'start'."
           },
           "label": {
             "type": "string",
-            "description": "For a box: the text inside it. For an arrow: an optional edge label, e.g. 'yes' / 'no'."
+            "description": "Box text; an arrow's edge label ('yes'/'no'); or the caption above a table or chart."
           },
           "shape": {
             "type": "string",
-            "enum": ["box", "ellipse", "diamond"],
-            "description": "Box shape. Use 'ellipse' for start/end, 'diamond' for a decision, 'box' (default) for a step."
+            "enum": ["box", "ellipse", "circle", "diamond", "hexagon", "parallelogram", "cylinder", "document", "note", "triangle", "cloud", "pill"],
+            "description": "Box shape, chosen by meaning: 'ellipse' start/end, 'diamond' decision, 'cylinder' database, 'parallelogram' input/output, 'document' a report or file, 'note' an annotation, 'cloud' an external service, 'hexagon' preparation, 'box' (default) a step. Domain words work too — 'database', 'decision', 'input' all map to the right shape."
           },
-          "from": {"type": "string", "description": "For an arrow: the id of the source box."},
-          "to": {"type": "string", "description": "For an arrow: the id of the target box."}
+          "from": {"type": "string", "description": "For an arrow: the id of the source element."},
+          "to": {"type": "string", "description": "For an arrow: the id of the target element."},
+          "columns": {
+            "type": "array",
+            "description": "For a table: the header cells.",
+            "items": {"type": "string"}
+          },
+          "rows": {
+            "type": "array",
+            "description": "For a table: the body rows. Every row must have as many cells as there are columns.",
+            "items": {"type": "array", "items": {"type": "string"}}
+          },
+          "chart": {
+            "type": "string",
+            "enum": ["bar", "line", "pie"],
+            "description": "For a chart: which plot to draw. 'bar' compares categories, 'line' shows a trend, 'pie' shows shares of a whole."
+          },
+          "data": {
+            "type": "array",
+            "description": "For a chart: the series, in the order it should be plotted.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "label": {"type": "string"},
+                "value": {"type": "number"}
+              },
+              "required": ["label", "value"]
+            }
+          }
         },
         "required": ["type"]
       }
