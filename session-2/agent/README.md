@@ -52,13 +52,14 @@ Key seams (interfaces):
 | 4 | Edit existing files | `ReadFile` + `EditFile` — `tools/files.go` |
 | 5 | Human-in-the-loop before danger | `Approver` gate on write/edit/delete/run — `tools/*.go`, `ui/console.go` |
 | 6 | Eval suite | `tools/tools_test.go` + `agent/eval_test.go` + `agent/eval_single_test.go` |
-| 7 | Draw a diagram from a prompt | `GenerateDiagram` → `canvas.svg` + `canvas.excalidraw` — `tools/diagram.go`, `tools/excalidraw.go` |
+| 7 | Draw a diagram from a prompt | `GenerateDiagram` → `canvas.svg` + `canvas.excalidraw` — `tools/diagram/` |
 | 8 | Edit it in place | `AddElements` / `UpdateElements` / `RemoveElements` — `tools/diagram/crud.go` |
 
 ## Beyond the six
 
-- **`generate_diagram`** — draw a whole diagram in one call from a prompt like
-  *"Draw a flowchart of user signup"*. Writes two files from one layout:
+- **`generate_diagram`** — draw anything visual in one call from a prompt like
+  *"Draw a flowchart of user signup"*: twelve shapes, tables, and bar/line/pie
+  charts, mixed freely on one canvas. Writes two files from one layout:
   `canvas.svg` (open in a browser, refresh after each redraw) and
   `canvas.excalidraw` (open at [excalidraw.com](https://excalidraw.com) to edit
   it by hand). The model
@@ -194,6 +195,35 @@ label would mean handing the tool the entire diagram again, which is just
 a modified diagram is identical to one drawn from scratch with the same
 elements, and the spec is saved last, only after both renders succeed, so what's
 on disk always describes the picture that's actually there.
+
+### Shapes, tables and charts
+
+Twelve shapes, chosen by meaning rather than geometry: `ellipse` start/end,
+`diamond` decision, `cylinder` database, `parallelogram` input/output,
+`document` a report, `note` an annotation, `cloud` an external service,
+`hexagon` preparation, plus `circle`, `triangle`, `pill` and the default `box`.
+Domain words map to the right shape — `"database"`, `"decision"`, `"input"` all
+work — because that is what a model actually writes. They are coloured by role
+(green terminators, amber branches, violet data), so a diagram reads at a glance
+without the caller specifying styling.
+
+**Tables** take `columns` and `rows`; column widths are measured from the widest
+cell so nothing is clipped. **Charts** take `chart` (`bar` / `line` / `pie`) and
+`data` as label/value pairs.
+
+Tables and charts are *nodes*, not a separate mode: they get laid out in the
+flow, arrows can point at them, and they can also stand alone — the
+"unconnected boxes" guard is a flowchart rule and doesn't fire for them.
+
+Two things learned from watching a real model call this:
+
+- It writes `{"type":"cylinder"}` as often as `{"type":"box","shape":"cylinder"}`.
+  Read literally the first is an unknown type, and the element used to degrade
+  to a plain rectangle with no error — the caller asked for a database and got a
+  box. A shape word in the `type` field is now recognised.
+- A shape must fill the box it is measured against. The first cloud traced its
+  arcs through only the lower band of its bounding box, so a centred label sat
+  outside the outline.
 
 ### Two files, one layout
 

@@ -12,35 +12,44 @@ import (
 // the shape's aspect correction, and the renderer fills that box. Adding a
 // shape means adding a row to these three functions and nothing else.
 
-// normalizeShape maps what a model actually writes onto the shapes we draw.
-// Models reach for domain words ("database", "decision", "start") far more often
-// than geometry, so the synonyms matter more than the canonical names.
+// normalizeShape maps what a model actually writes onto the shapes we draw,
+// falling back to a plain box for anything unrecognised.
 func normalizeShape(s string) string {
+	shape, _ := lookupShape(s)
+	return shape
+}
+
+// lookupShape is normalizeShape with the "did I actually recognise this?"
+// answer kept, which is what lets a shape word appearing in the *type* field be
+// told apart from a genuine unknown. Models reach for domain words
+// ("database", "decision", "start") far more often than geometry, so the
+// synonyms matter more than the canonical names.
+func lookupShape(s string) (string, bool) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "ellipse", "oval", "terminator", "start", "end":
-		return "ellipse"
+		return "ellipse", true
 	case "circle", "round", "dot", "state":
-		return "circle"
+		return "circle", true
 	case "diamond", "decision", "rhombus", "condition", "if":
-		return "diamond"
+		return "diamond", true
 	case "hexagon", "hex", "preparation":
-		return "hexagon"
+		return "hexagon", true
 	case "parallelogram", "input", "output", "io", "data":
-		return "parallelogram"
+		return "parallelogram", true
 	case "cylinder", "database", "db", "store", "storage", "disk":
-		return "cylinder"
+		return "cylinder", true
 	case "document", "doc", "report", "file":
-		return "document"
+		return "document", true
 	case "note", "comment", "annotation", "sticky":
-		return "note"
+		return "note", true
 	case "triangle", "delta", "warning":
-		return "triangle"
+		return "triangle", true
 	case "cloud", "internet", "external", "service":
-		return "cloud"
+		return "cloud", true
 	case "pill", "stadium", "capsule", "rounded":
-		return "pill"
+		return "pill", true
 	default:
-		return "box"
+		return "box", false
 	}
 }
 
@@ -51,8 +60,13 @@ func shapeAspect(shape string) (w, h float64) {
 	switch shape {
 	case "diamond":
 		return 1.5, 1.7
-	case "ellipse", "cloud":
+	case "ellipse":
 		return 1.15, 1.15
+	case "cloud":
+		// The cloud's arcs sit inside their bounding box rather than filling it,
+		// so a label sized against the box alone overflows the outline. Measured
+		// against the drawn path, not the box.
+		return 1.3, 1.5
 	case "circle":
 		return 1.3, 1.3
 	case "hexagon", "parallelogram":
@@ -144,19 +158,21 @@ func shapeSVG(n *diagramNode) string {
 			x+w-fold, y, x+w, y+fold, x+w-fold)
 
 	case "cloud":
-		// Three overlapping arcs over a flat base — enough to read as a cloud
-		// without pretending to be an illustration.
+		// Four lobes around the full bounding box. The earlier version traced
+		// its arcs through only the lower band of the box, so a label centred on
+		// the box sat outside the outline — the shape has to fill what it's
+		// measured against.
+		p := func(fx, fy float64) string {
+			return fmt.Sprintf("%.1f %.1f", x+w*fx, y+h*fy)
+		}
 		return fmt.Sprintf(
-			`<path class="%s" d="M %.1f %.1f `+
-				`a %.1f %.1f 0 0 1 %.1f %.1f `+
-				`a %.1f %.1f 0 0 1 %.1f %.1f `+
-				`a %.1f %.1f 0 0 1 %.1f %.1f `+
-				`H %.1f Z"/>`+"\n",
-			class, x+w*0.2, y+h,
-			w*0.22, h*0.42, w*0.06, -h*0.52,
-			w*0.26, h*0.5, w*0.34, -h*0.06,
-			w*0.24, h*0.44, w*0.2, h*0.58,
-			x+w*0.2)
+			`<path class="%s" d="M %s C %s, %s, %s C %s, %s, %s C %s, %s, %s C %s, %s, %s Z"/>`+"\n",
+			class,
+			p(0.12, 0.88),
+			p(-0.04, 0.86), p(-0.03, 0.50), p(0.14, 0.46),
+			p(0.13, 0.12), p(0.48, 0.02), p(0.56, 0.28),
+			p(0.74, 0.12), p(1.02, 0.26), p(0.92, 0.52),
+			p(1.06, 0.62), p(1.02, 0.88), p(0.88, 0.88))
 
 	default: // box
 		return fmt.Sprintf(`<rect class="%s" x="%.1f" y="%.1f" width="%.1f" height="%.1f" rx="8"/>`+"\n",

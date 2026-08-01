@@ -288,7 +288,15 @@ func buildDiagram(elements []diagramElement) ([]*diagramNode, []diagramEdge, err
 				return nil, nil, err
 			}
 		default:
-			n.kind, n.shape = kindShape, normalizeShape(e.Shape)
+			// The shape may have arrived in "shape" or, when the model skipped
+			// the box/shape distinction, in "type". Prefer the explicit field.
+			shape, ok := lookupShape(e.Shape)
+			if !ok {
+				if fromType, okType := lookupShape(e.Type); okType {
+					shape = fromType
+				}
+			}
+			n.kind, n.shape = kindShape, shape
 		}
 
 		byID[id] = n
@@ -339,6 +347,26 @@ func elementKind(e diagramElement) string {
 		return "box"
 	case "arrow", "edge", "link", "connection":
 		return "arrow"
+	case "table", "grid", "matrix":
+		return kindTable
+	case "chart", "graph", "plot", "bar", "line", "pie":
+		return kindChart
+	}
+	// Models routinely put the *shape* in the type field — {"type":"cylinder"}
+	// rather than {"type":"box","shape":"cylinder"}. Read literally that's an
+	// unknown type, and the element silently degrades to a plain rectangle: the
+	// caller asked for a database and got a box, with no error to say so.
+	if _, ok := lookupShape(e.Type); ok {
+		return "box"
+	}
+	// Inference, for when "type" is absent or misspelled. The payload is
+	// unambiguous: rows mean a table, data means a chart, from/to means an
+	// arrow, a bare id means a box.
+	if len(e.Rows) > 0 || len(e.Columns) > 0 {
+		return kindTable
+	}
+	if len(e.Data) > 0 || strings.TrimSpace(e.Chart) != "" {
+		return kindChart
 	}
 	if strings.TrimSpace(e.From) != "" && strings.TrimSpace(e.To) != "" {
 		return "arrow"

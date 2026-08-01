@@ -29,6 +29,7 @@ const (
 	exBlueFill   = "#a5d8ff"
 	exGreenFill  = "#b2f2bb"
 	exYellowFill = "#ffec99"
+	exVioletFill = "#d0bfff"
 
 	exFontSize   = 20.0
 	exLineHeight = 1.25
@@ -267,8 +268,15 @@ func exArrow(id string, e diagramEdge, fromID, toID string) map[string]any {
 	el["lastCommittedPoint"] = nil
 	el["startArrowhead"] = nil
 	el["endArrowhead"] = "arrow"
-	el["startBinding"] = map[string]any{"elementId": fromID, "focus": 0, "gap": 4}
-	el["endBinding"] = map[string]any{"elementId": toID, "focus": 0, "gap": 4}
+	// A table or chart has no single element to bind to — it's many primitives —
+	// so an arrow touching one is left unbound rather than bound to an id that
+	// doesn't exist, which would make Excalidraw drop the arrow on load.
+	if fromID != "" {
+		el["startBinding"] = map[string]any{"elementId": fromID, "focus": 0, "gap": 4}
+	}
+	if toID != "" {
+		el["endBinding"] = map[string]any{"elementId": toID, "focus": 0, "gap": 4}
+	}
 	return el
 }
 
