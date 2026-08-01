@@ -211,11 +211,22 @@ cd agent/excalidraw && npm install     # installs deps and builds the bundle
 npm run smoke                          # optional: proves it renders
 ```
 
-The Go tool finds the sidecar via `$AGENT_EXCALIDRAW_RENDERER` (a path to
-`render.cjs`), or by looking for `excalidraw/render.cjs` in the working
-directory and its parents. **Without it the built-in Go renderers draw instead**
-— a missing optional npm package should cost fidelity, not the feature. Set
-`AGENT_EXCALIDRAW_RENDERER=off` to force that path.
+The sidecar is found from any working directory, in this order:
+
+1. `$AGENT_EXCALIDRAW_RENDERER` — a path to `render.cjs`, or `off`.
+2. Beside the source the binary was compiled from.
+3. Beside the working directory: `excalidraw/render.cjs` at each level up, and
+   `agent/excalidraw/render.cjs` too — running from the *session* folder rather
+   than the agent folder is the easy mistake.
+
+Source-relative comes before the working directory on purpose: it resolves to
+the binary's *own* sidecar, so session-3's agent can't end up rendering with
+session-2's build just because of where it was launched.
+
+**Without a sidecar the built-in Go renderers draw instead** — a missing
+optional npm package should cost fidelity, not the feature. Set
+`AGENT_EXCALIDRAW_RENDERER=off` to force that path, and check which one drew a
+given file with `grep -c svg-source:excalidraw canvas.svg`.
 
 Getting Excalidraw to run headless takes a deliberate environment, and each
 piece is there because the bundle fails without it: jsdom for the DOM (touched
