@@ -12,10 +12,10 @@ import (
 
 	"github.com/joho/godotenv"
 
-	"github.com/aliworkshop/ai-engineering-course/session-1/agent/internal/agent"
-	"github.com/aliworkshop/ai-engineering-course/session-1/agent/internal/llm"
-	"github.com/aliworkshop/ai-engineering-course/session-1/agent/internal/tools"
-	"github.com/aliworkshop/ai-engineering-course/session-1/agent/internal/ui"
+	"github.com/aliworkshop/ai-engineering-course/internal/agent"
+	"github.com/aliworkshop/ai-engineering-course/internal/llm"
+	"github.com/aliworkshop/ai-engineering-course/internal/tools"
+	"github.com/aliworkshop/ai-engineering-course/internal/ui"
 )
 
 // Model is the OpenRouter model the agent talks to. gpt-4o-mini supports tools.

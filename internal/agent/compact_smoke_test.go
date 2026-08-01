@@ -7,15 +7,15 @@ import (
 
 	"github.com/joho/godotenv"
 
-	"github.com/aliworkshop/ai-engineering-course/session-2/agent/internal/llm"
-	"github.com/aliworkshop/ai-engineering-course/session-2/agent/internal/tools"
+	"github.com/aliworkshop/ai-engineering-course/internal/llm"
+	"github.com/aliworkshop/ai-engineering-course/internal/tools"
 )
 
 func TestCompactionShrinksHistory(t *testing.T) {
 	if testing.Short() {
 		t.Skip("live; skipped in -short")
 	}
-	godotenv.Load("../../.env")
+	godotenv.Load("../../../.env")
 	key := os.Getenv("OPENROUTER_API_KEY")
 	if key == "" {
 		t.Skip("OPENROUTER_API_KEY not set")

@@ -1,5 +1,9 @@
 # CLI AI Agent (Go)
 
+> **Branch `session-1`.** Each session of the course is a branch, with the agent
+> at the repo root — `git switch session-1` then `go run .`. Later sessions add
+> tools, diagrams, and an Excalidraw renderer; see `main` for the full list.
+
 A command-line AI agent you talk to in a loop. It answers from its own
 knowledge, searches the web, reports the weather, writes and runs scripts, edits
 files, and **asks a human before doing anything dangerous**. It also compacts its
@@ -11,8 +15,8 @@ Model access goes through the [OpenRouter Go SDK](https://github.com/OpenRouterT
 ## Run
 
 ```sh
-# from the repo root; needs OPENROUTER_API_KEY in .env
-go run ./agent
+# needs OPENROUTER_API_KEY in .env
+go run .
 ```
 
 Type questions; type `exit` to quit.
@@ -84,8 +88,8 @@ The model never runs code itself — it only *asks*. A dangerous tool first call
 ## Tests
 
 ```sh
-go test ./agent/...            # everything (also live web search + a real model call)
-go test ./agent/... -short     # fast, offline, deterministic (no key, no network)
+go test ./...            # everything (also live web search + a real model call)
+go test ./... -short     # fast, offline, deterministic (no key, no network)
 ```
 
 - **`tools` package** — unit evals: script roundtrip, edit, denial blocks the

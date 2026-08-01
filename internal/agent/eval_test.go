@@ -4,10 +4,10 @@ package agent
 //
 // Where the tools package unit-tests each tool deterministically, this runs
 // whole tasks through the REAL agent loop and grades the outcome: did it answer
-// without a tool when it should, reach for openrouter_web_search when it needed
-// facts, actually create+run a script, edit a file, and respect a "no"?
+// without a tool when it should, reach for web_search when it needed facts,
+// actually create+run a script, edit a file, and respect a "no"?
 //
-// Run:  go test ./internal/agent -run Eval -v
+// Run:  go test ./agent/internal/agent -run Eval -v
 // (needs OPENROUTER_API_KEY; skipped with -short)
 
 import (
@@ -19,8 +19,8 @@ import (
 
 	"github.com/joho/godotenv"
 
-	"github.com/aliworkshop/ai-engineering-course/session-3/agent/internal/llm"
-	"github.com/aliworkshop/ai-engineering-course/session-3/agent/internal/tools"
+	"github.com/aliworkshop/ai-engineering-course/internal/llm"
+	"github.com/aliworkshop/ai-engineering-course/internal/tools"
 )
 
 const evalModel = "openai/gpt-4o-mini"
@@ -46,7 +46,7 @@ func TestEvalAgentBehavior(t *testing.T) {
 	if testing.Short() {
 		t.Skip("live eval; skipped in -short mode")
 	}
-	godotenv.Load("../../.env")
+	godotenv.Load("../../../.env")
 	key := os.Getenv("OPENROUTER_API_KEY")
 	if key == "" {
 		t.Skip("OPENROUTER_API_KEY not set")
@@ -64,13 +64,13 @@ func TestEvalAgentBehavior(t *testing.T) {
 		{
 			name:       "knowledge/no-tool",
 			prompt:     "What is the capital of France? Answer in one word.",
-			mustNotUse: "openrouter_web_search",
+			mustNotUse: "web_search",
 			answerHas:  "paris",
 		},
 		{
 			name:        "web-search",
 			prompt:      "Search the web and tell me: who is the current Prime Minister of the UK?",
-			mustUseTool: "openrouter_web_search",
+			mustUseTool: "web_search",
 		},
 		{
 			name:      "write+run+read script",
@@ -106,7 +106,7 @@ func TestEvalAgentBehavior(t *testing.T) {
 	passed := 0
 	for _, sc := range scenarios {
 		t.Run(sc.name, func(t *testing.T) {
-			toolbox := tools.Default(approve(sc.approve), tools.WithOpenRouterSearch(client, evalModel))
+			toolbox := tools.Default(approve(sc.approve))
 			ag := New(client, evalModel, toolbox)
 
 			var used []string

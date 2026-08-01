@@ -26,8 +26,8 @@ import (
 	openrouter "github.com/OpenRouterTeam/go-sdk"
 	"github.com/OpenRouterTeam/go-sdk/models/components"
 
-	"github.com/aliworkshop/ai-engineering-course/session-3/agent/internal/llm"
-	"github.com/aliworkshop/ai-engineering-course/session-3/agent/internal/tools"
+	"github.com/aliworkshop/ai-engineering-course/internal/llm"
+	"github.com/aliworkshop/ai-engineering-course/internal/tools"
 )
 
 // selectionCase is one prompt and the exact set of tools we expect the model to
@@ -48,7 +48,7 @@ func TestEvalToolSelection(t *testing.T) {
 	if testing.Short() {
 		t.Skip("live eval; skipped in -short mode")
 	}
-	godotenv.Load("../../.env")
+	godotenv.Load("../../../.env")
 	key := os.Getenv("OPENROUTER_API_KEY")
 	if key == "" {
 		t.Skip("OPENROUTER_API_KEY not set")
@@ -57,7 +57,7 @@ func TestEvalToolSelection(t *testing.T) {
 
 	// A real registry so we advertise the exact specs production uses. The
 	// approver is never called — we stop before any tool executes.
-	toolbox := tools.Default(approve(false), tools.WithOpenRouterSearch(client, evalModel))
+	toolbox := tools.Default(approve(false))
 	specs := toolbox.Specs()
 
 	cases := []selectionCase{
@@ -65,7 +65,7 @@ func TestEvalToolSelection(t *testing.T) {
 		{"Create hello.txt containing 'hi'", []string{"write_file"}, map[string]string{"path": "hello.txt", "content": "hi"}},
 		{"Delete the file /tmp/old.log", []string{"delete_file"}, map[string]string{"path": "old.log"}},
 		{"Run the command `ls -la` and show me the output", []string{"run_command"}, map[string]string{"command": "ls -la"}},
-		{"Who is the current Prime Minister of the UK?", []string{"openrouter_web_search"}, nil},
+		{"Who is the current Prime Minister of the UK?", []string{"web_search"}, nil},
 		{"What's the weather like in Tokyo right now?", []string{"get_weather"}, map[string]string{"location": "Tokyo"}},
 		{"How windy is it in Chicago at the moment?", []string{"get_weather"}, map[string]string{"location": "Chicago"}},
 		{"What is the capital of France?", nil, nil}, // negative: knowledge, no tool
