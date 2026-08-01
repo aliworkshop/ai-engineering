@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -44,12 +45,14 @@ type excalidrawRender struct {
 
 // findRenderer locates the sidecar, or returns "" when it isn't available.
 //
-// The search is explicit rather than clever, because a compiled binary has no
-// idea where its source tree went:
+//  1. $AGENT_EXCALIDRAW_RENDERER, a direct path to render.cjs, or "off".
+//  2. Beside the source this package was compiled from.
+//  3. Beside the working directory.
 //
-//  1. $AGENT_EXCALIDRAW_RENDERER, a direct path to render.cjs.
-//  2. excalidraw/render.cjs under the working directory, then each parent —
-//     which covers running from the agent directory or anywhere beneath it.
+// Order matters. The sidecar ships inside the agent tree, so the source-relative
+// answer is the binary's *own* renderer — the right one even when the process is
+// run from somewhere else entirely, and specifically not some other copy of the
+// agent that happens to sit near the working directory.
 //
 // A renderer whose bundle hasn't been built yet is treated as absent: it would
 // only fail at the point of drawing, and the fallback draws something.
@@ -67,18 +70,48 @@ func findRenderer() string {
 		return ""
 	}
 
-	dir, err := os.Getwd()
-	if err != nil {
-		return ""
-	}
-	for {
-		candidate := filepath.Join(dir, rendererScript)
+	for _, candidate := range rendererCandidates() {
 		if usableRenderer(candidate) {
 			return candidate
 		}
+	}
+	return ""
+}
+
+// rendererCandidates lists everywhere the sidecar might be, best first.
+func rendererCandidates() []string {
+	var out []string
+	// runtime.Caller gives this file's path as it was at compile time, which
+	// for `go run` and a locally built binary is the real source tree. That is
+	// what makes the search work from any working directory — including one
+	// with no relationship to the agent at all. If the binary was moved to a
+	// machine without that tree, the paths simply don't exist and the working
+	// directory search below takes over.
+	if _, file, _, ok := runtime.Caller(0); ok {
+		out = append(out, ancestorCandidates(filepath.Dir(file))...)
+	}
+	if wd, err := os.Getwd(); err == nil {
+		out = append(out, ancestorCandidates(wd)...)
+	}
+	return out
+}
+
+// ancestorCandidates probes a directory and each of its parents.
+//
+// Two shapes are tried at every level: excalidraw/render.cjs, for a directory
+// at or under the agent itself, and agent/excalidraw/render.cjs, for one
+// *containing* it — running from the session folder rather than the agent
+// folder is the easy mistake, and it used to fall back silently because the
+// walk only ever went up.
+func ancestorCandidates(start string) []string {
+	var out []string
+	for dir := start; ; {
+		out = append(out,
+			filepath.Join(dir, rendererScript),
+			filepath.Join(dir, "agent", rendererScript))
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			return ""
+			return out
 		}
 		dir = parent
 	}
