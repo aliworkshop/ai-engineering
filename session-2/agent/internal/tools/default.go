@@ -4,8 +4,8 @@ import (
 	"net/http"
 	"time"
 
-	"ai-course/session-2/agent/internal/tools/diagram"
 	openrouter "github.com/OpenRouterTeam/go-sdk"
+	"github.com/aliworkshop/ai-engineering-course/session-2/agent/internal/tools/diagram"
 )
 
 // Option tweaks the default toolset. Options exist for tools that need
@@ -48,7 +48,9 @@ func Default(approver Approver, opts ...Option) *Registry {
 		ReadFile{},
 		GetWeather{HTTP: client},
 		diagram.GenerateDiagram{},
-		diagram.ModifyDiagram{},
+		diagram.AddElements{},
+		diagram.UpdateElements{},
+		diagram.RemoveElements{},
 	}
 	if s.searchClient != nil {
 		list = append(list, NativeWebSearch{Client: s.searchClient, Model: s.searchModel})

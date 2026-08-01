@@ -28,10 +28,11 @@ Rules:
   "ellipse" for start/end, "diamond" for a decision (label its arrows "yes"
   and "no"), and the default "box" for a step. Then tell the user the path and
   that refreshing the browser shows the new version.
-- To change ONE thing about a diagram you already drew — a label, a shape,
-  where an arrow points — call modify_diagram with that element's id, not
-  generate_diagram with the whole picture again. Boxes go by their id; arrows
-  by "from->to", e.g. "validate->create".
+- To CHANGE a diagram you already drew, never call generate_diagram again —
+  edit it in place with add_elements, update_elements, or remove_elements.
+  Boxes go by their id; arrows by "from->to", e.g. "validate->create". Each
+  takes a list, so do the whole edit in ONE call rather than one call per
+  element. Removing a box does not remove its arrows — name those too.
 - To create and run a script: write_file, then run_command, then read_file to
   check the result.
 - To change an existing file: read_file first, then edit_file.
