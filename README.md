@@ -1,14 +1,15 @@
-# CLI AI Agent (Go)
+# AI Agent (Go) — terminal or browser
 
 > **Branch `session-3`.** Each session of the course is a branch, with the agent
 > at the repo root — `git switch session-3` then `go run .`. This is the newest:
 > `session-2` is the same agent with the built-in diagram renderers, `session-1`
 > has no tools at all.
 
-A command-line AI agent you talk to in a loop. It answers from its own
-knowledge, searches the web, reports the weather, writes and runs scripts, edits
-files, and **asks a human before doing anything dangerous**. It also compacts its
-own conversation history so a long session doesn't keep growing the token bill.
+An AI agent you talk to in a loop, **in the terminal or in a browser**. It
+answers from its own knowledge, searches the web, reports the weather, writes and
+runs scripts, edits files, and **asks a human before doing anything dangerous**.
+It also compacts its own conversation history so a long session doesn't keep
+growing the token bill.
 
 Model access goes through the [OpenRouter Go SDK](https://github.com/OpenRouterTeam/go-sdk)
 (`github.com/OpenRouterTeam/go-sdk`), which needs **Go 1.25+**.
@@ -17,14 +18,18 @@ Model access goes through the [OpenRouter Go SDK](https://github.com/OpenRouterT
 
 ```sh
 # needs OPENROUTER_API_KEY in .env
-go run .
+
+go run .                 # terminal: type questions, 'exit' to quit
+go run . -http :8080     # browser: open http://localhost:8080
 ```
 
-Type questions; type `exit` to quit.
+Both front-ends drive the *same* agent with the *same* tools and the *same*
+approval gate — the only difference is who answers the y/n and where the
+progress is printed.
 
 ## Architecture
 
-Dependencies point inward. The UI knows the agent; the agent knows an abstract
+Dependencies point inward. A UI knows the agent; the agent knows an abstract
 tool box; the tools know an abstract approver. Nothing inner imports anything
 outer, so each layer is testable on its own.
 
@@ -32,6 +37,7 @@ outer, so each layer is testable on its own.
 main.go                       wire everything together, then run
   └── internal/
         ui/          Console   REPL + terminal human-approver (owns stdin)
+        web/         Server    chat page + browser human-approver (one session each)
         agent/       Agent     the think → run-tools → repeat loop
         tools/       Registry  Tool interface + all tools + Approver port
         llm/                   OpenRouter Go SDK client factory
@@ -40,7 +46,8 @@ main.go                       wire everything together, then run
 Key seams (interfaces):
 
 - **`tools.Approver`** — the human-in-the-loop gate. `ui.Console` implements it
-  for real; tests pass a yes/no stub. Tools never import the UI.
+  for the terminal and `web.Session` for the browser; tests pass a yes/no stub.
+  Tools never import a UI.
 - **`agent.ToolBox`** — what the agent needs from its tools (`Specs`,
   `Dispatch`). `tools.Registry` satisfies it; the agent never imports concrete
   tools.
@@ -55,7 +62,7 @@ Key seams (interfaces):
 | 2 | Search the web | `NativeWebSearch` — OpenRouter's own `web` plugin — `tools/nativesearch.go` |
 | 3 | Write scripts and run them | `WriteFile` + `RunCommand` + `ReadFile` — `tools/files.go`, `tools/shell.go` |
 | 4 | Edit existing files | `ReadFile` + `EditFile` — `tools/files.go` |
-| 5 | Human-in-the-loop before danger | `Approver` gate on write/edit/delete/run — `tools/*.go`, `ui/console.go` |
+| 5 | Human-in-the-loop before danger | `Approver` gate on write/edit/delete/run — `tools/*.go`, `ui/console.go`, `web/session.go` |
 | 6 | Eval suite | `tools/tools_test.go` + `agent/eval_test.go` + `agent/eval_single_test.go` |
 | 7 | Draw a diagram from a prompt | `GenerateDiagram` → `canvas.svg` + `canvas.excalidraw` — `tools/diagram/` |
 | 8 | Edit it in place | `AddElements` / `UpdateElements` / `RemoveElements` — `tools/diagram/crud.go` |
@@ -66,8 +73,8 @@ Key seams (interfaces):
   *"Draw a flowchart of user signup"*: twelve shapes, tables, and bar/line/pie
   charts, mixed freely on one canvas. Writes two files from one layout:
   `canvas.svg` (open in a browser, refresh after each redraw) and
-  `canvas.excalidraw` (open at [excalidraw.com](https://excalidraw.com) to edit
-  it by hand). The model
+  `canvas.excalidraw` (edit it by hand in the browser UI, or at
+  [excalidraw.com](https://excalidraw.com)). The model
   passes only structure — boxes with ids and labels, arrows referencing those
   ids — in a single `elements` array; **it never passes coordinates**, because
   asking a model for pixel geometry reliably produces overlapping boxes and
@@ -81,6 +88,10 @@ Key seams (interfaces):
 - **`get_weather`** — current temperature and wind for a place, via Open-Meteo's
   free, keyless APIs (geocode the name, then fetch conditions). Read-only, no
   approval — `tools/weather.go`.
+- **Browser UI** — `go run . -http :8080` serves the same agent as a chat page:
+  tool calls appear as they run, dangerous ones stop for an Approve/Deny click,
+  and a diagram the agent draws shows up next to the chat as a live Excalidraw
+  canvas you can drag boxes around in. See **Browser UI** below — `web/`.
 - **Thinking spinner** — a turn can take several model round trips, so the
   console animates a one-line indicator while it waits instead of leaving the
   terminal dead. Everything that prints mid-turn (tool lines, compaction
@@ -114,6 +125,47 @@ history if it has hit the interval (see **Beyond the six**).
 The model never runs code itself — it only *asks*. A dangerous tool first calls
 `Approver.Confirm` for a y/n on the terminal.
 
+## Browser UI (`web/`)
+
+```sh
+go run . -http :8080     # then open http://localhost:8080
+```
+
+One page, embedded in the binary with `go:embed` — no build step and no CDN. The
+single exception is the diagram canvas below, which is Excalidraw itself, served
+from the same `npm install` the renderer uses and fetched only when a diagram is
+shown. `web.Session` is to the browser what `ui.Console` is to the terminal: it
+is the approver the tools ask, and the hooks the agent reports progress to.
+
+- **A turn is a stream.** `POST /api/chat` answers with server-sent events and
+  stays open until the turn ends, so tool calls, compaction notices and approval
+  requests appear *as they happen* rather than all at once at the end — the same
+  reason the terminal has a spinner.
+- **Approval is a real block.** When a gated tool calls `Confirm`, the page shows
+  an Approve/Deny card and the tool sits there, parked, until the click arrives
+  on `POST /api/approve` — a separate request, because the turn's own response is
+  busy being a stream. Anything that isn't a real yes denies: a closed tab, a
+  browser that hung up, or five minutes of silence.
+- **One conversation per browser.** A cookie names the session; each has its own
+  agent, and therefore its own history. A second question arriving mid-turn is
+  refused with `409` rather than queued — the agent rewrites its history as it
+  works, so turns must not overlap. Idle conversations are dropped after two
+  hours.
+- **The diagram is a canvas, not a picture.** The panel is Excalidraw itself,
+  open on `canvas.excalidraw`, so a box the model put in the wrong place is
+  dragged rather than re-prompted — the same drag, select and retype you'd get on
+  excalidraw.com. **Save** writes both files back: the scene, so the next edit
+  starts where this one stopped, and the SVG, exported by Excalidraw in the
+  browser, so everything pointed at `canvas.svg` shows the edited drawing.
+  **Picture** is the way back to that flat SVG, shown in an `<img>` where it
+  cannot run script. See [The canvas](#the-canvas).
+- **It follows the agent, until you touch it.** Tools that redraw flag their
+  event; an untouched canvas reloads itself, so "move the database box down"
+  updates what you're looking at. A canvas with unsaved edits is left alone, and
+  offers **Reload** for when you're ready to take the agent's version.
+- **New chat** rebuilds the session's agent with an empty history — the
+  browser's version of quitting the CLI and starting it again.
+
 ## Tests
 
 ```sh
@@ -123,6 +175,17 @@ go test ./... -short     # fast, offline, deterministic (no key, no network)
 
 - **`ui` package** — spinner unit tests: it animates and clears, stays silent
   off a terminal, and the console pauses it before printing mid-turn.
+- **`web` package** — the browser front-end end to end over a real HTTP server,
+  with a scripted stand-in for the agent, so no key and no network: a turn
+  streams its tool calls and ends with the answer, a failed turn streams the
+  error, an approval blocks the tool until the click and hands back exactly what
+  was clicked, a stale or unwatched approval denies, an overlapping question is
+  refused, browsers don't share a history but follow-ups do, and the canvas is
+  served only once something has been drawn. The editor half is covered too: a
+  save writes both files, junk that isn't a scene or isn't an SVG bounces with
+  nothing written, a save mid-turn is refused, the routes vanish without a built
+  bundle, the asset route can't be walked out of its directory, and a save
+  replaces a file whole rather than in place.
 - **`tools` package** — unit evals: script roundtrip, edit, denial blocks the
   action, read-only tools never prompt, unknown tool handled, live web search,
   the diagram tool (valid SVG on disk, no overlap, cycles, bad input), the
@@ -212,9 +275,13 @@ Excalidraw is a browser library and this is a Go program, so it runs as a Node
 sidecar in `excalidraw/`. One-time setup:
 
 ```sh
-cd excalidraw && npm install     # installs deps and builds the bundle
+cd excalidraw && npm install     # installs deps and builds both bundles
 npm run smoke                          # optional: proves it renders
 ```
+
+`npm install` builds two bundles from the same packages: `excalidraw-bundle.cjs`,
+the rendering half loaded by the Node sidecar, and `editor-bundle.js` + `.css`,
+the whole app for the browser UI's [live canvas](#the-canvas).
 
 The sidecar is found from any working directory, in this order:
 
@@ -256,6 +323,46 @@ Three defects found by looking at the output rather than trusting it:
   Subtracting an estimated half-width shifted every free label off by exactly
   that estimate.
 
+### The canvas
+
+`go run . -http :8080` shows the diagram next to the chat as a **live Excalidraw
+canvas** — drag a box, retype a label, restyle the lot, exactly as on
+excalidraw.com. Nothing here reimplements a drawing tool: it is the same package
+the sidecar renders with, bundled for the browser by `excalidraw/editor.jsx` and
+opened on `canvas.excalidraw`.
+
+| Route | |
+|---|---|
+| `GET /canvas.excalidraw` | the scene the canvas opens |
+| `POST /api/canvas` | the scene and the SVG, written back |
+| `GET /editor/editor-bundle.js`, `.css` | the built editor |
+| `GET /editor/assets/…` | Excalidraw's hand-drawn fonts, from `node_modules` |
+
+- **Both halves are saved.** Saving writes `canvas.excalidraw` and re-exports
+  `canvas.svg`, so the picture and the editable original never describe two
+  different diagrams. The SVG is exported by Excalidraw *in the browser* — the
+  elements are already there, and a Node round trip per save would only add
+  latency.
+- **The agent's redraws land on it.** A clean canvas reloads itself when a
+  diagram tool runs; one with unsaved edits keeps them and offers **Reload**.
+  Whichever way, the choice between your drawing and the agent's is made by
+  clicking, never silently.
+- **Offline like everything else.** The fonts come from the installed package,
+  not from Excalidraw's CDN default, and the app is fetched the first time a
+  diagram is shown rather than on page load — it is several megabytes, and most
+  sessions never draw one.
+- **Optional, like the sidecar.** No `npm install`, no `editor-bundle.js`, no
+  live canvas: the panel falls back to the picture it always was.
+- **A save waits for the agent.** It takes the same per-conversation lock a
+  question does, so a hand edit can't land in the middle of a redraw; mid-turn it
+  is refused with `409` and the page says why.
+- **Hand edits and the CRUD tools don't merge.** `add_elements` and friends
+  redraw from `canvas.diagram.json` — the spec the *model* drew from, which knows
+  nothing about a box you moved. After editing by hand, asking the agent to
+  change the same diagram replaces your edits with a fresh drawing (which is why
+  a dirty canvas asks before reloading). Ask it for the diagram you want first,
+  then move things; or move things, then keep going by hand.
+
 ### Shapes, tables and charts
 
 Twelve shapes, chosen by meaning rather than geometry: `ellipse` start/end,
@@ -292,7 +399,7 @@ disagree about the picture — only the serialization differs.
 
 | | `canvas.svg` | `canvas.excalidraw` |
 |---|---|---|
-| Open with | any browser | excalidraw.com (File → Open, or drag onto the canvas) |
+| Open with | any browser | the browser UI's canvas, or excalidraw.com (File → Open, or drag onto the canvas) |
 | Update loop | **refresh the page** | re-import after a redraw |
 | Editable | no | yes — drag boxes, retype labels, restyle |
 

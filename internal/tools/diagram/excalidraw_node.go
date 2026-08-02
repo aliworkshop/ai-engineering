@@ -32,6 +32,10 @@ import (
 // rendererScript is the sidecar entry point, relative to the search roots.
 const rendererScript = "excalidraw/render.cjs"
 
+// rendererEnv overrides the search below with a direct path, or turns the
+// sidecar off entirely.
+const rendererEnv = "AGENT_EXCALIDRAW_RENDERER"
+
 // rendererTimeout bounds the sidecar. Loading a 13 MB bundle and rendering is
 // ~1s in practice; anything past this is a hang, not slow work.
 const rendererTimeout = 60 * time.Second
@@ -57,7 +61,7 @@ type excalidrawRender struct {
 // A renderer whose bundle hasn't been built yet is treated as absent: it would
 // only fail at the point of drawing, and the fallback draws something.
 func findRenderer() string {
-	if explicit := os.Getenv("AGENT_EXCALIDRAW_RENDERER"); explicit != "" {
+	if explicit := os.Getenv(rendererEnv); explicit != "" {
 		// "off" forces the built-in renderers — useful for testing that path,
 		// and for anyone who'd rather not spawn Node per diagram.
 		switch strings.ToLower(explicit) {
@@ -115,6 +119,34 @@ func ancestorCandidates(start string) []string {
 		}
 		dir = parent
 	}
+}
+
+// AssetDir returns the directory the sidecar lives in — the agent's own
+// excalidraw/ folder, with the npm packages and the built bundles beside it —
+// or "" when it can't be found or has been switched off.
+//
+// It exists for the browser UI, which serves the Excalidraw editor and its
+// fonts out of that same folder. Unlike findRenderer this doesn't insist on a
+// built bundle: which bundle matters is the caller's business, and the editor
+// wants a different one than the sidecar does.
+func AssetDir() string {
+	if explicit := os.Getenv(rendererEnv); explicit != "" {
+		switch strings.ToLower(explicit) {
+		case "off", "none", "0", "false":
+			return ""
+		}
+		if _, err := os.Stat(explicit); err != nil {
+			return ""
+		}
+		return filepath.Dir(explicit)
+	}
+
+	for _, candidate := range rendererCandidates() {
+		if _, err := os.Stat(candidate); err == nil {
+			return filepath.Dir(candidate)
+		}
+	}
+	return ""
 }
 
 // usableRenderer reports whether the script and its built bundle both exist.
