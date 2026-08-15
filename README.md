@@ -1,15 +1,27 @@
-# AI Agent (Go) — terminal or browser
+# AI Agent (Go) — terminal or browser, on a real harness
 
-> **Branch `session-3`.** Each session of the course is a branch, with the agent
-> at the repo root — `git switch session-3` then `go run .`. This is the newest:
-> `session-2` is the same agent with the built-in diagram renderers, `session-1`
-> has no tools at all.
+> **Branch `session-4`.** Each session of the course is a branch, with the agent
+> at the repo root — `git switch session-4` then `go run .`. This is the newest:
+> `session-3` is the same agent without the harness, `session-2` adds the
+> built-in diagram renderers, `session-1` has no tools at all.
 
 An AI agent you talk to in a loop, **in the terminal or in a browser**. It
 answers from its own knowledge, searches the web, reports the weather, writes and
-runs scripts, edits files, and **asks a human before doing anything dangerous**.
-It also compacts its own conversation history so a long session doesn't keep
-growing the token bill.
+runs scripts, edits files, draws diagrams, and **asks a human before doing
+anything dangerous**.
+
+Underneath it is **the harness** — the runtime layer between the agent loop and
+the real world, and the part most agents don't have until it bites them. One
+sentence holds the whole design together:
+
+> **The LLM decides the next semantic step. The harness owns execution.**
+
+Kill the process mid-task and nothing is repeated when it resumes. Model-written
+code runs in a sandbox with no credentials and a timer. Context is assembled per
+turn against a token budget instead of growing forever. The agent you talk to
+literally cannot delete a file — it hands that to a specialist that can. And an
+approval nobody answers parks the run on disk, where it costs nothing to wait
+three days.
 
 Model access goes through the [OpenRouter Go SDK](https://github.com/OpenRouterTeam/go-sdk)
 (`github.com/OpenRouterTeam/go-sdk`), which needs **Go 1.25+**.
@@ -21,7 +33,20 @@ Model access goes through the [OpenRouter Go SDK](https://github.com/OpenRouterT
 
 go run .                 # terminal: type questions, 'exit' to quit
 go run . -http :8080     # browser: open http://localhost:8080
+go run . -v              # ...with the full harness event stream
+
+# the harness's own commands
+go run . -list           # workflows, and which are waiting on you
+go run . -approve <id>   # approve a parked action, then finish the run
+go run . -deny <id>      # refuse it, then finish the run
+go run . -resume <id>    # pick up a run that crashed
 ```
+
+Everything the runtime owns lives in `.harness/` as plain files: a workflow is a
+JSON file, the event log is JSONL, a pending human decision is a one-line JSON
+file. That is deliberate — the concepts are the point, and swapping in Postgres
+later changes the storage, not a single idea above it. It is gitignored, and
+`rm -rf .harness` is a clean slate.
 
 Both front-ends drive the *same* agent with the *same* tools and the *same*
 approval gate — the only difference is who answers the y/n and where the
@@ -38,10 +63,19 @@ main.go                       wire everything together, then run
   └── internal/
         ui/          Console   REPL + terminal human-approver (owns stdin)
         web/         Server    chat page + browser human-approver (one session each)
-        agent/       Agent     the think → run-tools → repeat loop
+        agent/       Agent     the loop, memory, the roster, the supervisor
         tools/       Registry  Tool interface + all tools + Approver port
+        approval/    Gate      a human decision as a checkpointed step
+        durable/     Workflow  checkpoint · crash · resume, with no double-sends
+        sandbox/     Sandbox   the one door model-written code goes through
+        events/      Event     typed stream + glyphed console + JSONL log
         llm/                   OpenRouter Go SDK client factory
 ```
+
+The harness packages sit *under* the agent, and the arrows still only point
+inward: `durable` and `sandbox` know nothing about agents, `approval` knows
+nothing about tools, and `events` knows nothing about anything. Each is usable —
+and testable — on its own.
 
 Key seams (interfaces):
 
@@ -54,6 +88,216 @@ Key seams (interfaces):
 - **`tools.Tool`** — one capability. Add a feature by writing one struct with
   `Spec()` + `Run()` and listing it in `tools.Default`.
 
+## The harness
+
+Seven parts, one runtime. Each names a production failure mode, and the part of
+the codebase that answers it.
+
+| # | Failure it prevents | Where |
+|---|---|---|
+| 1 | *Invisible infrastructure is undebuggable* — progress that exists only as `print` | `internal/events` — every move is a typed `Event`; the terminal renders it, the JSONL log stores it |
+| 2 | *The process dies after a side effect* — state lost, model re-billed, the write done twice | `internal/durable` — a workflow is a JSON file, a step is checkpointed the moment it finishes |
+| 3 | *The model asks to run code* — and something just runs it | `internal/sandbox` — one mediated door: killed process group, stripped env, empty scratch dir, timer |
+| 4 | *Context grows forever* — slower, dumber, more expensive every turn | `internal/agent/memory.go` — history ≠ state ≠ context, compacted against a token budget |
+| 5 | *One agent holds every tool* — no least privilege | `internal/agent/roster.go` — an agent is a name, a prompt, and a tool subset |
+| 6 | *Sub-tasks run serially; one failure kills all* | `internal/agent/supervisor.go` — plan → fan out → fan in → synthesize, degrading gracefully |
+| 7 | *Approval is a blocked function call* — holds the server open, dies on restart | `internal/approval` — a human decision is a checkpointed step; no answer parks the run |
+
+### 1 · Everything is an event
+
+The harness never prints its feelings. It emits typed events — `workflow.started`,
+`tool.requested`, `approval.requested` — and the consumers differ: the terminal
+renders one glyphed line each, the browser pushes them down its SSE stream, and
+`.harness/events.jsonl` appends every one.
+
+```
+▶ workflow.started    wf=acca4cb5 text=write "hello harness" to /tmp/demo.txt
+▪ step.completed      wf=acca4cb5 name=model-00 ms=837
+↪ agent.handoff       wf=acca4cb5 from=assistant to=operator
+✋ approval.requested  wf=acca4cb5 text=WRITE file "/tmp/demo.txt" (13 bytes)
+⏸ workflow.suspended  wf=acca4cb5
+```
+
+The quiet payoff: because every event already carries a timestamp, cost and
+latency reporting is a script over a file — no new instrumentation, no change to
+the harness.
+
+`step.completed` and `tool.completed` are deliberately different events. The
+first is about the *checkpoint* (model turns, human decisions, and whole
+investigations are checkpointed too); the second is about a tool actually
+running.
+
+### 2 · Durable execution
+
+The problem is not "remember the conversation". It is: the tool deleted the
+file, and the process died before anything was written down. Re-run the task and
+it deletes again.
+
+A workflow is a JSON file. A step is a named unit of work whose result is
+checkpointed the instant it finishes. To recover you simply **re-run the
+workflow body** — completed steps return their cached result without executing
+(no model call, no side effect, no cost) and execution races forward to exactly
+where it died. There is no separate recovery path; resuming *is* running.
+
+```go
+result, err := durable.Step(wf, "tool-"+call.ID, func() (string, error) {
+    return a.tools.Dispatch(ctx, call.Name, call.Args), nil
+})
+```
+
+One rule worth its own line: **a failed step is never checkpointed.** Pinning a
+failure would make the crash permanent, and retrying the workflow has to mean
+retrying the thing that broke.
+
+### 3 · Sandboxing and code mode
+
+The better reason to care about code execution is that sometimes the best thing
+an agent can do is write code. Chaining tools to count something means every
+intermediate result round-trips through the model. Code mode flips it: hand the
+model the tools as an API and let it write one program.
+
+That is *why* the sandbox exists. A `run_code` program gets a throwaway
+directory, a killed process group, a wall-clock timeout, an output cap, and an
+environment stripped to `PATH`/`HOME`/`LANG` — so a program that cannot see a
+credential cannot leak one. It reaches the agent's read-only tools over a unix
+socket in its own scratch dir:
+
+```python
+import agent_tools
+text = agent_tools.call("read_file", path="go.mod")
+print(sum(1 for line in text.splitlines() if "require" in line))
+```
+
+Stated plainly: this stops accidents, runaway loops, and casual exfiltration. It
+is **not** a boundary against a determined attacker — that needs a container or a
+disposable micro-VM. What the harness owes you is the same either way, and is the
+actual lesson: every dangerous capability goes through one door, so hardening
+later means changing one file.
+
+### 4 · Memory and context hydration
+
+Three different things, kept apart on purpose:
+
+| | |
+|---|---|
+| **History** | Everything that happened. Durable, in the event log. *Never sent to the model wholesale.* |
+| **State** | A compact running summary of older turns. Concrete facts survive: paths, commands, values. |
+| **Context** | What the model sees *this turn* — assembled fresh from system prompt + pinned goal + summary + recent turns. |
+
+Compaction is triggered by the assembled context passing a **token budget**, not
+by a turn count — one turn where the model batched six tool calls is worth more
+than five chatty ones, and a turn count cannot tell them apart. It cuts on whole
+turns, so a tool result is never separated from the call that produced it, and
+it never touches the most recent turn, because that is what a follow-up refers
+to.
+
+> Context is a runtime decision, not a chat log.
+
+### 5 · Routing and handoffs
+
+The honest answer most multi-agent material skips: **usually you don't need
+this.** One capable model with good tools is a generalist. A handoff earns its
+keep when the other agent is genuinely different — and the case that always
+qualifies is least privilege.
+
+```
+assistant  read_file · get_weather · openrouter_web_search · diagram×4 ·
+           run_code · investigate · handoff
+operator   read_file · write_file · edit_file · delete_file · run_command · run_code
+```
+
+The assistant cannot be *talked into* deleting a file, because there is no
+`delete_file` in its list to call. It hands over instead, and the switch is
+recorded in the workflow so a crash resumes as the operator. Run with `-v` to
+see the roster printed at startup.
+
+### 6 · Supervision
+
+Same honesty: you usually don't need this either. It earns its keep on three
+specific wins — **context isolation** (each investigator works in its own window
+and returns a short finding, so the parent never drowns in three subjects' worth
+of tool output), **parallelism**, and **synthesis that survives partial
+failure**.
+
+Four phases: plan → dispatch → fan in → synthesize. The plan is a first-class
+artifact — emitted and read by synthesis, not left as ephemeral reasoning — and
+investigators are strictly read-only, which is what lets a whole investigation
+be one durable step that is safe to replay. A failed investigator becomes a
+finding with an error on it, and synthesis is told to write around the gap:
+
+```
+🗺 plan.created        name=3 tasks
+├ subagent.started    name=weather-tehran
+├ subagent.started    name=weather-oslo
+├ subagent.started    name=go.mod
+✓ subagent.completed  name=weather-tehran result=38.1°C, wind 14.3 km/h
+```
+
+Whether it actually makes your agent better is a question for evals, not for an
+architecture diagram.
+
+### 7 · Human-in-the-loop
+
+Where the whole thing pays off. The naive version is one line with three bugs:
+
+```go
+approved := approver.Confirm(action)  // 1. holds the process open for the whole wait
+                                      // 2. dies on restart — the question is gone
+                                      // 3. a human might answer in 30 seconds or 3 days
+```
+
+The fix needs no new machinery, because Part 2 already built it: **a human
+decision is just another checkpointed step**, one whose value comes from a
+person rather than a function.
+
+The interactive y/n is kept — a human who *is* sitting there shouldn't have to
+run a second command — but it is now the fast path into that same step. And the
+front-ends can now tell "the human said no" from "no human answered", which used
+to be indistinguishable: a closed browser tab silently denied the action.
+Only a click or a keystroke is an answer. Everything else parks the run.
+
+```
+$ go run .
+you> write "hello harness" to /tmp/demo.txt
+  ↪ agent.handoff       from=assistant to=operator
+⚠️  Approve this action?
+    WRITE file "/tmp/demo.txt" (13 bytes)
+    [y/N]:
+(no answer — parking this for later)
+⏸  awaiting approval: WRITE file "/tmp/demo.txt" (13 bytes)
+   go run . -approve acca4cb5      (or -deny acca4cb5)
+
+$ # the process EXITED. nothing is running. nothing was written.
+$ # hours or days pass. the server can reboot; it changes nothing.
+
+$ go run . -approve acca4cb5
+  ⟲ workflow.resumed    wf=acca4cb5 agent=operator
+  ⏩ step.cached         wf=acca4cb5 name=model-00        # replayed, not re-billed
+  ⏩ step.cached         wf=acca4cb5 name=tool-call_2D4S  # the handoff, replayed
+  ↪ agent.handoff       wf=acca4cb5 from=assistant to=operator
+  ⏩ step.cached         wf=acca4cb5 name=model-01
+  🖊 approval.resolved   wf=acca4cb5 approved=true
+  ✓ tool.completed      wf=acca4cb5 name=write_file result=Wrote /tmp/demo.txt
+  ✔ workflow.completed  wf=acca4cb5
+```
+
+Say `-deny` instead and the model is told a human refused — so it explains that
+the change needs manual review rather than retrying blindly, and nothing is
+written.
+
+Two details that are easy to get wrong and worth stating:
+
+- **A park must not be checkpointed.** When no one answers, the gate returns
+  false and the tool politely reports "denied" — a perfectly good string, and
+  caching it would be a disaster: the resumed run would replay that refusal
+  forever. The park travels as an *error* instead, so `durable.Step` declines to
+  cache anything and the replay reaches the same call again.
+- **Model turns are keyed by position alone**, not by which agent is speaking.
+  Folding in the agent name reads like extra safety and is the opposite — a
+  handoff happens mid-run, so the names stop matching on replay, the run
+  diverges, and the symptom is a resumed workflow asking for the same approval
+  twice. `TestHandoffThenParkResumesOntoTheSameCall` is the regression test.
+
 ## The requirements → where they live
 
 | # | Requirement | Where |
@@ -62,7 +306,7 @@ Key seams (interfaces):
 | 2 | Search the web | `NativeWebSearch` — OpenRouter's own `web` plugin — `tools/nativesearch.go` |
 | 3 | Write scripts and run them | `WriteFile` + `RunCommand` + `ReadFile` — `tools/files.go`, `tools/shell.go` |
 | 4 | Edit existing files | `ReadFile` + `EditFile` — `tools/files.go` |
-| 5 | Human-in-the-loop before danger | `Approver` gate on write/edit/delete/run — `tools/*.go`, `ui/console.go`, `web/session.go` |
+| 5 | Human-in-the-loop before danger | `Approver` gate on write/edit/delete/run — `tools/*.go`, `ui/console.go`, `web/session.go`; made durable by `approval/` |
 | 6 | Eval suite | `tools/tools_test.go` + `agent/eval_test.go` + `agent/eval_single_test.go` |
 | 7 | Draw a diagram from a prompt | `GenerateDiagram` → `canvas.svg` + `canvas.excalidraw` — `tools/diagram/` |
 | 8 | Edit it in place | `AddElements` / `UpdateElements` / `RemoveElements` — `tools/diagram/crud.go` |
@@ -102,28 +346,54 @@ Key seams (interfaces):
   VS Code's debug console) is a pipe, not a terminal, so the spinner disables
   itself there** — set `AGENT_SPINNER=1` to force it on (or `=0` to force it
   off anywhere) — `ui/spinner.go`, `ui/console.go`.
-- **History compaction** — every `CompactEvery` questions (default 5), the agent
-  folds the older part of the conversation into one summary message and keeps the
-  system prompt and the most recent turn verbatim. This caps per-request token
-  growth without blurring the turn a follow-up is most likely to reference. It
-  runs only at a safe boundary (after a final answer, so no tool call is left
-  awaiting its result). Best-effort: if summarizing fails, the full history is
-  kept — `agent/agent.go`.
+- **Bounded context** — the agent keeps its full history but never sends it. Each
+  turn it *assembles* a context (system prompt + pinned goal + summary + recent
+  turns) and, when that assembly passes a token budget, folds the oldest whole
+  turns into the summary. Tokens sent per turn stop growing. It runs only at a
+  safe boundary (after a final answer, so no tool call is left awaiting its
+  result) and is best-effort: if summarizing fails, the turns go back untouched,
+  because a lost summary costs tokens and a lost turn costs the conversation —
+  `agent/memory.go`. See **The harness · 4**.
+- **`run_code`** — code mode: the model writes one program instead of chaining
+  six tool calls, and it runs in the sandbox with the read-only tools available
+  over a socket. See **The harness · 3** — `tools/code.go`, `sandbox/`.
+- **`investigate`** — fans a multi-part question out to read-only sub-agents that
+  each research in their own context, then writes up what came back, naming any
+  investigation that failed. See **The harness · 6** — `agent/supervisor.go`.
 
 ## How the loop works (`agent/agent.go`)
 
-`Agent.Ask` runs `think → runTools` until the model replies with no tool calls:
+`Agent.Ask` runs `think → runTools` until the model replies with no tool calls.
+Each line below names the part that owns it:
 
-1. **think** — send the conversation + tool specs to the model.
-2. If the reply has no tool calls, it's the final answer — return it.
-3. **runTools** — run each requested tool, append results as `role: tool`
-   messages, and loop (capped at `maxSteps`).
+```
+workflow := store.Open(id, task)        // 2 · durable state
+for {
+    context := memory.Context(working)  // 4 · assembled fresh, bounded
+    reply   := durable.Step(model)      // 1, 5 · the LLM decides
+    gate.Scope(call.ID)                 // 7 · approval as a durable state
+    result  := durable.Step(tool)       // 3 · sandbox · resume from exactly here
+    if handoff { switch specialist }    // 5 · lateral control transfer
+}
+```
 
-When a turn ends with a final answer, the agent counts the turn and compacts the
-history if it has hit the interval (see **Beyond the six**).
+1. **think** — assemble the context, send it with the current agent's tool specs,
+   and checkpoint the reply. On a replay this returns from disk, which is what
+   makes the tool call ids stable across a crash.
+2. If the reply has no tool calls, it's the final answer — commit the turn to
+   memory, compact if over budget, return.
+3. **runTools** — run each requested tool as its own checkpointed step, append
+   results as `role: tool` messages, and loop (capped at `maxSteps`). A handoff
+   result swaps the prompt and the toolset; a park unwinds the whole run.
+
+Every harness service is **optional**. With no store the loop is an ordinary
+in-memory one — brittle, and honest about it — which is exactly what keeps the
+eval suite and the unit tests from having to stand up a runtime to test a
+prompt. `agent.New(...)` alone is the pre-harness agent; the `With*` methods add
+each part.
 
 The model never runs code itself — it only *asks*. A dangerous tool first calls
-`Approver.Confirm` for a y/n on the terminal.
+`Approver.Confirm`, which is now the durable gate.
 
 ## Browser UI (`web/`)
 
@@ -193,13 +463,51 @@ go test ./... -short     # fast, offline, deterministic (no key, no network)
   and the CRUD tools (batch add/update/remove, atomic rollback on a breaking
   batch, refusal to cascade a delete, edits composing across calls, spec
   round-trips to the same drawing).
-- **`agent` package** — live evals (skipped with `-short` or without a key):
+- **`durable` package** — the claim the package exists to make, measured: a
+  crashed run resumes without re-executing a single completed step, a failed step
+  is *not* checkpointed so it can be retried, state survives through a brand new
+  Store the way a second process would see it, and a corrupt workflow file fails
+  loudly rather than silently starting over and repeating every side effect.
+- **`approval` package** — a human is asked exactly once and every replay reads
+  the answer off disk; nobody answering parks the run and records *nothing*; a
+  refusal is a decision, so it is checkpointed and does not park; a decision left
+  by the CLI is consumed once and cannot approve a second action; and a different
+  action under the same call id asks again rather than reusing the yes.
+- **`sandbox` package** — output is captured and capped, a runaway loop is killed
+  on time, a backgrounded child dies with the process group, a crash comes back
+  as a *result* the model can reason about rather than an error, `OPENROUTER_API_KEY`
+  is provably absent inside, the tool bridge serves the allowlist and refuses
+  everything else, and a **relative** scratch dir works — the last being a
+  regression test for a bug every other test in the file was blind to, because
+  they all used absolute `t.TempDir()` paths and production does not.
+- **`events` package** — the JSONL log is append-only and every line parses with a
+  timestamp, an unanswered request is distinguishable from a refusal, a panicking
+  sink cannot take the others down with it, and a multi-line tool result still
+  renders as exactly one line.
+- **`agent` package** — the harness end to end against a scripted model over a
+  local HTTP server, so the runtime is deterministic even though the model isn't:
+  - *durability* (`harness_test.go`) — a crash after the irreversible action does
+    not repeat it on resume, and only the *uncached* turn costs a model call. The
+    same loop with no store repeats everything, which is the point.
+  - *approval* — a parked run resumes onto the same call after the human decides,
+    performing the gated action exactly once.
+  - *routing* — a handoff swaps the toolset and survives a crash; an invented
+    agent name is ignored, because the roster is the authority, not the model.
+  - *supervision* (`supervisor_test.go`) — a failed investigator degrades into an
+    honest gap in the write-up instead of an error, raw sub-agent tool output
+    never reaches the parent's context, and an unusable plan falls back to one task.
+  - *memory* (`memory_test.go`) — compaction cuts only on turn boundaries (a tool
+    result is never orphaned from its call), never touches the most recent turn,
+    and tool-call ids survive translation to the SDK's message union.
+- **`agent` package, live evals** (skipped with `-short` or without a key):
   - *behavioral* (`eval_test.go`) — whole tasks through the real model, graded
     on which tools it chose, its answer, and the actual side effects on disk.
   - *tool selection* (`eval_single_test.go`) — one-shot: does the model pick the
     right tool, with the right arguments, on the first step? Never executes.
-  - *compaction* (`compact_smoke_test.go`) — asks five questions and checks the
-    history folds down to the system prompt, a summary, and the last turn.
+  - *context budget* (`compact_smoke_test.go`) — asks five questions under an
+    absurdly small budget and checks that the context stops growing, that the
+    older turns survive as a summary rather than being dropped, and that the last
+    question is still there verbatim.
 
   The behavioral and tool-selection evals print a scorecard.
 
