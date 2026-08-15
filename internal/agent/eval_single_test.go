@@ -100,10 +100,10 @@ func toolsChosen(t *testing.T, client *openrouter.OpenRouter, specs []components
 	auto := components.CreateChatToolChoiceChatToolChoiceAuto(components.ChatToolChoiceAutoAuto)
 	res, err := client.Chat.Send(context.Background(), components.ChatRequest{
 		Model: openrouter.String(evalModel),
-		Messages: []components.ChatMessages{
-			systemMsg(SystemPrompt),
-			userMsg(prompt),
-		},
+		Messages: toSDK([]Msg{
+			{Role: "system", Text: SystemPrompt},
+			{Role: "user", Text: prompt},
+		}),
 		Tools:      specs,
 		ToolChoice: &auto,
 	}, nil)
