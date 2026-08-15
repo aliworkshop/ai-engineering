@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/aliworkshop/ai-engineering-course/internal/agent"
+	"github.com/aliworkshop/ai-engineering-course/internal/durable"
 )
 
 // Console reads from one input stream and writes to one output stream.
@@ -30,21 +31,64 @@ func New(in io.Reader, out io.Writer) *Console {
 }
 
 // Confirm implements tools.Approver: it shows the pending action and waits for
-// a yes/no on the terminal. The spinner is paused for the duration — it's the
-// agent that's waiting on the human now, not the other way round, and a live
-// spinner would overwrite the prompt the human is meant to read.
+// a yes/no on the terminal.
 func (c *Console) Confirm(action string) bool {
+	approved, _ := c.Decide(action)
+	return approved
+}
+
+// Decide is the richer answer the durable approval gate wants: it reports
+// whether a human answered at all, separately from what they said.
+//
+// The distinction matters because the two have opposite consequences. A "no" is
+// a decision — it gets checkpointed, and the model is told it was refused. No
+// answer at all (the terminal hit EOF, someone pressed Ctrl-D, the session is
+// being piped from a script) is not a decision, and the right response is to
+// park the workflow on disk for a human to answer later rather than to invent a
+// refusal.
+//
+// The spinner is paused for the duration — it's the agent that's waiting on the
+// human now, not the other way round, and a live spinner would overwrite the
+// prompt the human is meant to read.
+func (c *Console) Decide(action string) (approved, answered bool) {
 	c.spin.Stop()
 	defer c.spin.Start()
 
 	fmt.Fprintf(c.out, "\n⚠️  Approve this action?\n    %s\n    [y/N]: ", action)
-	line, _ := c.in.ReadString('\n')
+	line, err := c.in.ReadString('\n')
+	if err != nil && strings.TrimSpace(line) == "" {
+		fmt.Fprintln(c.out, "\n(no answer — parking this for later)")
+		return false, false
+	}
 	switch strings.TrimSpace(strings.ToLower(line)) {
 	case "y", "yes":
-		return true
+		return true, true
 	default:
-		return false
+		return false, true
 	}
+}
+
+// EventWriter is a stdout the harness's event stream can safely write to
+// mid-turn.
+//
+// The spinner and the event stream both want the terminal at the same moment,
+// and they are not equals: the spinner is decoration that redraws itself, the
+// event is information. Anything that prints during a turn therefore has to
+// pause the spinner first, or the next animation frame lands on top of the line
+// just written and the output becomes unreadable exactly when you are watching
+// it because something went wrong.
+//
+// Handing out a Writer rather than exporting the spinner keeps that rule in one
+// place: the events package renders to an io.Writer and stays ignorant of
+// terminals entirely.
+func (c *Console) EventWriter() io.Writer { return spinnerSafe{c} }
+
+type spinnerSafe struct{ c *Console }
+
+func (s spinnerSafe) Write(p []byte) (int, error) {
+	s.c.spin.Stop()
+	defer s.c.spin.Start()
+	return s.c.out.Write(p)
 }
 
 // Run is the read-eval-print loop: read a line, let the agent answer, repeat
@@ -75,9 +119,17 @@ func (c *Console) Run(ctx context.Context, ag *agent.Agent) {
 		// prints mid-turn pauses the spinner first, so it only ever animates
 		// while we're genuinely blocked on the model.
 		c.spin.Start()
-		answer, err := ag.Ask(ctx, input)
+		answer, workflow, err := ag.AskDurable(ctx, input)
 		c.spin.Stop()
 
+		if parked, ok := durable.IsSuspended(err); ok {
+			// Not an error: the workflow is alive on disk with a question
+			// outstanding, and nothing is holding the process open. Answer it
+			// now or next week; either way it picks up where it stopped.
+			fmt.Fprintf(c.out, "\n⏸  %s\n", parked.Reason)
+			fmt.Fprintf(c.out, "   go run . -approve %s      (or -deny %s)\n", workflow, workflow)
+			continue
+		}
 		if err != nil {
 			fmt.Fprintln(c.out, "\nerror:", err)
 			continue

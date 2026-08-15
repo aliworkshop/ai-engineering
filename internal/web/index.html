@@ -330,6 +330,13 @@ function handle(ev) {
     case "approval": approval(ev); break;
     case "compact": notice("history compacted — " + oneLine(ev.text, 120)); break;
     case "answer": message("agent", ev.text); break;
+    // Not an error: nobody answered the approval card, so the run parked itself
+    // on disk. Nothing is running and nothing is lost — the decision can be
+    // made from the terminal whenever, and the run picks up where it stopped.
+    case "suspended":
+      notice("waiting for a human — " + oneLine(ev.text, 120));
+      notice("approve it with:  go run . -approve " + ev.id);
+      break;
     case "error": message("error", ev.text); break;
   }
 }

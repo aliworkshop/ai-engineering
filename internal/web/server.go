@@ -21,6 +21,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/aliworkshop/ai-engineering-course/internal/durable"
 )
 
 // Assistant is all the server needs from the agent: ask a question, get an
@@ -176,6 +178,13 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	answer, err := sess.assistant.Ask(r.Context(), message)
 	if err != nil {
+		// A parked workflow is not an error the user should see as one: nothing
+		// broke, a decision is outstanding, and the run is safe on disk until
+		// someone makes it. Reported as its own event so the page can say so.
+		if parked, ok := durable.IsSuspended(err); ok {
+			sess.emit(event{Type: "suspended", Text: parked.Reason, ID: parked.ID})
+			return
+		}
 		sess.emit(event{Type: "error", Text: err.Error()})
 		return
 	}

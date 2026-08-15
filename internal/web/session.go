@@ -79,17 +79,30 @@ func (s *Session) emit(e event) error {
 	return s.stream.send(e)
 }
 
-// Confirm implements tools.Approver. It shows the pending action in the page
-// and blocks the tool until the human clicks Approve or Deny — the same
-// contract the terminal's y/n prompt has, with the answer arriving on a
-// separate request instead of on stdin.
-//
-// It denies whenever it can't get a real yes: no live turn, a browser that hung
-// up, or nobody home for approvalTimeout.
+// Confirm implements tools.Approver.
 func (s *Session) Confirm(action string) bool {
+	approved, _ := s.Decide(action)
+	return approved
+}
+
+// Decide shows the pending action in the page and waits for the human to click
+// Approve or Deny — the same contract the terminal's y/n prompt has, with the
+// answer arriving on a separate request instead of on stdin.
+//
+// The second return value is what makes the wait cheap. Before, every way of
+// not getting a yes collapsed into "no": a closed tab, a five-minute timeout,
+// and a deliberate refusal were indistinguishable, so walking away from your
+// desk silently denied the action. Now only a click is an answer. Everything
+// else reports "nobody answered", and the durable gate above parks the workflow
+// on disk instead — where the same question can be answered tomorrow with
+// `-approve <id>` and the run picks up exactly where it stopped.
+//
+// The timeout stays, but it now means "stop holding this request open", not
+// "the human said no".
+func (s *Session) Decide(action string) (approved, answered bool) {
 	// Register before asking, so a decision that comes back immediately still
 	// finds somewhere to land. The channel is buffered, so resolve never blocks
-	// on a Confirm that has already given up.
+	// on a Decide that has already given up.
 	reply := make(chan bool, 1)
 	id := newID()
 
@@ -103,7 +116,7 @@ func (s *Session) Confirm(action string) bool {
 	}()
 
 	if err := s.emit(event{Type: "approval", ID: id, Action: action}); err != nil {
-		return false
+		return false, false // nothing is listening; there is no human to ask
 	}
 
 	ctx := s.ctx
@@ -112,11 +125,11 @@ func (s *Session) Confirm(action string) bool {
 	}
 	select {
 	case approved := <-reply:
-		return approved
+		return approved, true
 	case <-ctx.Done():
-		return false // the browser went away mid-question
+		return false, false // the browser went away mid-question
 	case <-time.After(approvalTimeout):
-		return false
+		return false, false
 	}
 }
 

@@ -20,6 +20,7 @@ var indexHTML []byte
 //	compact   history was folded   — Text (the summary)
 //	approval  a tool needs a y/n   — ID, Action
 //	answer    the turn is done     — Text
+//	suspended nobody answered; the run is parked on disk — ID, Text
 //	error     the turn failed      — Text
 type event struct {
 	Type    string `json:"type"`
