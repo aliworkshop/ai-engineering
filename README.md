@@ -499,6 +499,10 @@ go test ./... -short     # fast, offline, deterministic (no key, no network)
   - *memory* (`memory_test.go`) — compaction cuts only on turn boundaries (a tool
     result is never orphaned from its call), never touches the most recent turn,
     and tool-call ids survive translation to the SDK's message union.
+- **`evals/` module** — the same live evals, reported to Braintrust so scores
+  accumulate across runs instead of scrolling away. Separate module on purpose:
+  the SDK pulls ~60 dependencies and the agent keeps its two. See
+  [`evals/README.md`](evals/README.md).
 - **`agent` package, live evals** (skipped with `-short` or without a key):
   - *behavioral* (`eval_test.go`) — whole tasks through the real model, graded
     on which tools it chose, its answer, and the actual side effects on disk.
@@ -509,7 +513,13 @@ go test ./... -short     # fast, offline, deterministic (no key, no network)
     older turns survive as a summary rather than being dropped, and that the last
     question is still there verbatim.
 
-  The behavioral and tool-selection evals print a scorecard.
+  The behavioral and tool-selection evals print a scorecard. The diagram
+  dataset and its four scorers live in `internal/evalscore` rather than in the
+  test file, because deciding whether a diagram is *good* is not test logic and
+  has a second caller: the Braintrust eval in `evals/`, which is a separate
+  module and cannot import a `_test.go` file. One copy, two front-ends — two
+  implementations of that judgement would drift within a week, and the first
+  symptom would be two dashboards disagreeing about the same run.
 
 ## Diagram layout (`tools/diagram.go`)
 
