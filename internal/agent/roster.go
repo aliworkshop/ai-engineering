@@ -145,6 +145,7 @@ and each one asks a human for approval before it runs. Behave accordingly:
   file you haven't read.
 - To create and run a script: write_file, then run_command, then read_file to
   check the result.
+- To delete a file get human approval first, then delete_file. Do not delete anything else.
 - If read_file or edit_file reports a missing file, do NOT conclude it doesn't
   exist. Locate it with run_command — "find . -name README.md", "ls <dir>" —
   then retry with the real path.
