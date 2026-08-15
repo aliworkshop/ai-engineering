@@ -17,6 +17,17 @@ type Option func(*settings)
 type settings struct {
 	searchClient *openrouter.OpenRouter
 	searchModel  string
+	sandboxDir   string
+	specialists  map[string]string
+	extra        []Tool
+}
+
+// WithExtra adds tools built outside this package. The supervisor (Part 6)
+// needs one: it drives a model and its own sub-agents, so it belongs in the
+// agent package — but it is still just a Tool, and the registry should not have
+// to know where a tool came from to advertise it.
+func WithExtra(list ...Tool) Option {
+	return func(s *settings) { s.extra = append(s.extra, list...) }
 }
 
 // WithOpenRouterSearch enables the openrouter_web_search tool, which searches
@@ -29,6 +40,25 @@ func WithOpenRouterSearch(client *openrouter.OpenRouter, model string) Option {
 		s.searchClient = client
 		s.searchModel = model
 	}
+}
+
+// WithSandbox enables run_code — code mode — with dir as the scratch space each
+// run gets a throwaway directory under.
+//
+// It is opt-in rather than always-on because it changes how the agent solves
+// things: given run_code, a model will often write one program where it would
+// otherwise have made four tool calls. That is the win, but a test that asserts
+// "this task must use run_command" wants the old shape, and should not have to
+// be rewritten to keep passing.
+func WithSandbox(dir string) Option {
+	return func(s *settings) { s.sandboxDir = dir }
+}
+
+// WithSpecialists enables the handoff tool, naming the agents that can be
+// handed to and what each is for. Without it the agent has no way to transfer
+// control, which is the right default for a single-agent setup.
+func WithSpecialists(specialists map[string]string) Option {
+	return func(s *settings) { s.specialists = specialists }
 }
 
 // Default builds the standard toolset, wiring the human-in-the-loop approver
@@ -56,6 +86,20 @@ func Default(approver Approver, opts ...Option) *Registry {
 		list = append(list, NativeWebSearch{Client: s.searchClient, Model: s.searchModel})
 	}
 
+	// Held as a pointer so its wiring can be completed after the registry
+	// exists: run_code lends the registry's own tools to sandboxed code, and
+	// the registry cannot be built until every tool in it is built.
+	var code *RunCode
+	if s.sandboxDir != "" {
+		code = &RunCode{Scratch: s.sandboxDir}
+		list = append(list, code)
+	}
+
+	if len(s.specialists) > 0 {
+		list = append(list, Handoff{To: s.specialists})
+	}
+	list = append(list, s.extra...)
+
 	// dangerous — approval required
 	list = append(list,
 		WriteFile{Approver: approver},
@@ -64,5 +108,28 @@ func Default(approver Approver, opts ...Option) *Registry {
 		RunCommand{Approver: approver},
 	)
 
-	return NewRegistry(list...)
+	registry := NewRegistry(list...)
+
+	if code != nil {
+		code.Dispatch = registry.Dispatch
+		code.Expose = sandboxable(registry)
+	}
+	return registry
+}
+
+// sandboxable is the tool list model-written code may reach: everything
+// read-only, minus the two that only make sense at the harness level.
+//
+// run_code is excluded so a program cannot spawn another sandbox — recursion
+// that buys nothing and makes timeouts meaningless. handoff is excluded because
+// transferring control is the loop's decision to make, not a subroutine's.
+func sandboxable(r *Registry) []string {
+	var out []string
+	for _, name := range r.SafeNames() {
+		if name == "run_code" || name == HandoffTool {
+			continue
+		}
+		out = append(out, name)
+	}
+	return out
 }

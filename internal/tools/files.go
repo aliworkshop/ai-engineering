@@ -35,6 +35,11 @@ func (ReadFile) Run(_ context.Context, args string) (string, error) {
 // WriteFile creates or overwrites a file. Dangerous — gated by the Approver.
 type WriteFile struct{ Approver Approver }
 
+// Sensitive marks write_file as a tool that changes the world: it is gated by
+// the Approver, kept out of the sandbox, and held by a specialist rather than
+// the generalist agent.
+func (WriteFile) Sensitive() bool { return true }
+
 func (WriteFile) Spec() components.ChatFunctionTool {
 	return defineTool("write_file", "Create or overwrite a file on disk. Requires human approval.",
 		`{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}`)
@@ -63,6 +68,9 @@ func (t WriteFile) Run(_ context.Context, args string) (string, error) {
 // EditFile replaces the first occurrence of OldString with NewString in an
 // existing file. Dangerous — gated by the Approver.
 type EditFile struct{ Approver Approver }
+
+// Sensitive: edit_file rewrites a file in place. See WriteFile.Sensitive.
+func (EditFile) Sensitive() bool { return true }
 
 func (EditFile) Spec() components.ChatFunctionTool {
 	return defineTool("edit_file",
@@ -98,6 +106,9 @@ func (t EditFile) Run(_ context.Context, args string) (string, error) {
 
 // DeleteFile removes a file. Dangerous — gated by the Approver.
 type DeleteFile struct{ Approver Approver }
+
+// Sensitive: delete_file is irreversible. See WriteFile.Sensitive.
+func (DeleteFile) Sensitive() bool { return true }
 
 func (DeleteFile) Spec() components.ChatFunctionTool {
 	return defineTool("delete_file", "Delete a file from disk. Requires human approval.",

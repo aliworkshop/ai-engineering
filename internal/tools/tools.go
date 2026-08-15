@@ -25,6 +25,27 @@ type Tool interface {
 	Run(ctx context.Context, args string) (string, error)
 }
 
+// Sensitive marks a tool that changes something outside the agent — writes,
+// deletes, shell commands. It is an optional interface rather than a field so
+// a tool declares its own risk next to the code that takes it, and adding a
+// tool cannot accidentally leave it off a list somewhere else.
+//
+// Two parts of the harness read it: the sandbox bridge, which refuses to expose
+// anything sensitive to model-written code (Part 3), and the roster, which
+// gives the generalist agent only the tools it needs and parks the rest with a
+// specialist (Part 5).
+type Sensitive interface {
+	Sensitive() bool
+}
+
+// isSensitive reports a tool's own answer, defaulting to safe. Defaulting the
+// other way sounds more cautious but is worse: every new read-only tool would
+// silently vanish from the sandbox until someone remembered a method.
+func isSensitive(t Tool) bool {
+	s, ok := t.(Sensitive)
+	return ok && s.Sensitive()
+}
+
 // Registry holds the agent's tools and routes calls to them by name.
 type Registry struct {
 	byName map[string]Tool
@@ -49,6 +70,47 @@ func (r *Registry) Specs() []components.ChatFunctionTool {
 		specs = append(specs, r.byName[name].Spec())
 	}
 	return specs
+}
+
+// Names lists every tool in advertisement order.
+func (r *Registry) Names() []string {
+	return append([]string(nil), r.order...)
+}
+
+// SafeNames lists the tools that change nothing — the set sandboxed code is
+// allowed to reach (Part 3).
+func (r *Registry) SafeNames() []string {
+	var out []string
+	for _, name := range r.order {
+		if !isSensitive(r.byName[name]) {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// Subset returns a registry holding only the named tools, in the order given.
+// This is how least privilege is expressed in Part 5: an agent is a prompt plus
+// a subset, and a tool a specialist doesn't hold is one it cannot be talked
+// into using. Names that don't exist are skipped — a roster is configuration,
+// and a typo in it should not take the process down at startup.
+func (r *Registry) Subset(names ...string) *Registry {
+	sub := &Registry{byName: make(map[string]Tool, len(names))}
+	for _, name := range names {
+		tool, ok := r.byName[name]
+		if !ok {
+			continue
+		}
+		sub.byName[name] = tool
+		sub.order = append(sub.order, name)
+	}
+	return sub
+}
+
+// Has reports whether the registry advertises a tool.
+func (r *Registry) Has(name string) bool {
+	_, ok := r.byName[name]
+	return ok
 }
 
 // specName pulls a function tool's advertised name out of the union type. Every

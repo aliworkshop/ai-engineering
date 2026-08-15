@@ -13,6 +13,10 @@ import (
 // the agent executes the scripts it writes. Dangerous — gated by the Approver.
 type RunCommand struct{ Approver Approver }
 
+// Sensitive: run_command executes whatever the model wrote. See
+// WriteFile.Sensitive.
+func (RunCommand) Sensitive() bool { return true }
+
 func (RunCommand) Spec() components.ChatFunctionTool {
 	return defineTool("run_command",
 		"Run a shell command and return its combined output. Use this to execute scripts. Requires human approval.",
