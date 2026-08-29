@@ -54,20 +54,27 @@ type selectionOutput struct {
 func TestToolSelectionEval(t *testing.T) {
 	client, model := setup(t)
 
-	// A real registry, so the specs advertised are exactly the ones production
-	// advertises. The approver is never called — we stop before any tool runs.
-	toolbox := tools.Default(approve(false),
-		tools.WithOpenRouterSearch(model, evalModel),
-		tools.WithSandbox(t.TempDir()))
-	specs := toolbox.Specs()
+	// The teacher's own toolset, built the way production builds it: the whole
+	// registry, then the teacher's subset. Advertising every tool in the
+	// registry would grade an agent nobody runs, and would make "chose the
+	// right tool" easier than it really is. The approver is never called — we
+	// stop before any tool runs.
+	registry := tools.Default(approve(false),
+		tools.WithKnowledge(corpusDir),
+		tools.WithSpecialists(map[string]string{
+			agent.TeacherName:  agent.TeacherPurpose,
+			agent.OperatorName: agent.OperatorPurpose,
+		}))
+	specs := registry.Subset(agent.TeacherTools...).Specs()
 
 	dataset := eval.NewDataset([]eval.Case[selectionInput, selectionOutput]{
-		{Input: selectionInput{"Use run_code to print the 40th Fibonacci number", []string{"run_code"}, map[string]string{"language": "python"}}, Tags: []string{"code-mode"}},
-		{Input: selectionInput{"What is 17 * 23?", nil, nil}, Tags: []string{"arithmetic", "negative"}},
-		{Input: selectionInput{"Who is the current Prime Minister of the UK?", []string{"openrouter_web_search"}, nil}, Tags: []string{"search"}},
-		{Input: selectionInput{"What's the weather like in Tokyo right now?", []string{"get_weather"}, map[string]string{"location": "Tokyo"}}, Tags: []string{"weather"}},
-		{Input: selectionInput{"How windy is it in Chicago at the moment?", []string{"get_weather"}, map[string]string{"location": "Chicago"}}, Tags: []string{"weather"}},
-		{Input: selectionInput{"What is the capital of France?", nil, nil}, Tags: []string{"knowledge", "negative"}},
+		{Input: selectionInput{"Is it 'a hour' or 'an hour'?", []string{tools.KnowledgeTool}, map[string]string{"query": "an"}}, Tags: []string{"retrieval", "articles"}},
+		{Input: selectionInput{"When do I use the present perfect instead of the past simple?", []string{tools.KnowledgeTool}, map[string]string{"query": "perfect"}}, Tags: []string{"retrieval", "tenses"}},
+		{Input: selectionInput{"Correct this: she dont like when i writes letters.", []string{tools.KnowledgeTool}, nil}, Tags: []string{"retrieval", "correction"}},
+		// Not its job, and the point of the roster: the teacher holds no tool
+		// that touches the machine, so the only right move is to hand over.
+		{Input: selectionInput{"Delete the file /tmp/draft.txt for me.", []string{tools.HandoffTool}, map[string]string{"to": "operator"}}, Tags: []string{"handoff", "least-privilege"}},
+		{Input: selectionInput{"Thanks, that was helpful!", nil, nil}, Tags: []string{"negative", "no-tool"}},
 	})
 
 	task := eval.T(func(ctx context.Context, in selectionInput) (selectionOutput, error) {
@@ -156,7 +163,7 @@ func chooseTools(ctx context.Context, client *openrouter.OpenRouter, specs []com
 		Messages: []components.ChatMessages{
 			components.CreateChatMessagesSystem(components.ChatSystemMessage{
 				Role:    components.ChatSystemMessageRoleSystem,
-				Content: components.CreateChatSystemMessageContentStr(agent.SystemPrompt),
+				Content: components.CreateChatSystemMessageContentStr(agent.TeacherPrompt),
 			}),
 			components.CreateChatMessagesUser(components.ChatUserMessage{
 				Role:    components.ChatUserMessageRoleUser,

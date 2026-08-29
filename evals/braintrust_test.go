@@ -53,6 +53,11 @@ const projectName = "ai-engineering-agent"
 // apart.
 const evalModel = "openai/gpt-4o-mini"
 
+// corpusDir is the teacher's reference, relative to this module. The evals read
+// the corpus that ships, not a fixture — retrieval graded against a stand-in
+// tells you nothing about the agent you run.
+const corpusDir = "../corpus"
+
 // setup builds the Braintrust client and the model client, or skips.
 //
 // Skipping rather than failing is deliberate: a missing key means this machine

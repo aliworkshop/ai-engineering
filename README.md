@@ -628,11 +628,15 @@ go test ./... -short     # fast, offline, deterministic (no key, no network)
   run by both eval front-ends, so the Go scorecard and the Braintrust dashboard
   can never disagree about the same answer. See **Answer relevancy** above.
 - **`agent` package, live evals** (skipped with `-short` or without a key):
-  - *behavioral* (`eval_test.go`) — whole tasks through the real model, graded
-    on which tools it chose, its answer, and — for a task whose answer it could
-    not have guessed — whether it really ran the work rather than reporting it.
+  - *behavioral* (`eval_test.go`) — whole tasks through the real teacher, built
+    by `agent.TeacherRoster` so the graded agent is the one that ships: did it
+    look the rule up, correct the text instead of answering it, cite the file
+    the rule actually came from — and, on every case, is the reply about what
+    was asked (`evalscore.AnswerRelevancy`).
   - *tool selection* (`eval_single_test.go`) — one-shot: does the model pick the
-    right tool, with the right arguments, on the first step? Never executes.
+    right tool, with the right arguments, on the first step? Never executes,
+    which is what makes it safe to ask the teacher to delete a file and check
+    that it hands off instead.
   - *context budget* (`compact_smoke_test.go`) — asks five questions under an
     absurdly small budget and checks that the context stops growing, that the
     older turns survive as a summary rather than being dropped, and that the last

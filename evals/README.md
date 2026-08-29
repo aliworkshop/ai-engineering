@@ -7,7 +7,7 @@ away.
 ```sh
 cd evals
 go test -v                              # both suites
-go test -run TestToolSelectionEval -v   # the cheap one (6 model calls, ~4s)
+go test -run TestToolSelectionEval -v   # the cheap one (5 model calls, ~4s)
 ```
 
 Needs `OPENROUTER_API_KEY` and `BRAINTRUST_API_KEY` in `../.env`. Missing either
@@ -17,14 +17,22 @@ one skips rather than fails, with a message naming which.
 
 | Suite | Cases | Scores | Notes |
 |---|---|---|---|
-| `tool-selection` | 6 | `correct_tool`, `correct_args` | One model call each, nothing executes. Cheapest signal, most sensitive to prompt edits. |
-| `behavior` | 4 | `tool_choice`, `answer_match`, `side_effect` | Whole tasks through the real loop, graded on what the agent chose and what came back. |
+| `tool-selection` | 5 | `correct_tool`, `correct_args` | One model call each, nothing executes. Cheapest signal, most sensitive to prompt edits. |
+| `behavior` | 5 | `tool_choice`, `answer_match`, `answer_avoids`, `side_effect`, `answer_relevancy` | Whole tasks through the real teacher, graded on what it chose and what came back. |
 
-Scores abstain individually — `answer_match` applies only to the cases that
-name an expected answer, `side_effect` only to the ones that declare a check
-(none do while the toolset carries nothing that changes the machine).
-Braintrust handles that natively: a score that is not in the list is not
-averaged, which is exactly the `n/a` the Go scorecard prints.
+Both suites run the agent `main.go` runs: the full registry, then
+`agent.TeacherRoster` over it, entering as the teacher.
+
+Scores abstain individually — `answer_match` applies only to cases naming an
+expected answer, `side_effect` only to ones declaring a check (none do while the
+toolset carries nothing that changes the machine). Braintrust handles that
+natively: a score not in the list is not averaged, which is exactly the `n/a`
+the Go scorecard prints.
+
+`answer_relevancy` is the one continuous score in there — deepeval's metric,
+ported to Go in `internal/evalscore` and shared with the in-repo eval. It is
+also the score a dashboard earns its keep on: 0.95 → 0.78 is drift no assertion
+catches and a trend line shows at a glance.
 
 ## Why this is a separate module
 
@@ -45,7 +53,8 @@ in the parent, bump it here too.
 ## Relationship to the Go eval tests
 
 Additive, not a replacement. `internal/agent/eval*_test.go` still run offline
-with `-short` and still print their scorecards. Same datasets, same scorers, so
+with `-short` and still print their scorecards. Same datasets, same agent, and
+literally the same relevancy scorer — imported from `internal/evalscore` — so
 the two can never disagree about the same run.
 
 What Braintrust adds is history: which case flipped, when, and against which

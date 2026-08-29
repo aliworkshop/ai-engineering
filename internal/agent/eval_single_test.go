@@ -55,20 +55,19 @@ func TestEvalToolSelection(t *testing.T) {
 	}
 	client := llm.NewOpenRouter(key)
 
-	// A real registry so we advertise the exact specs production uses. The
-	// approver is never called — we stop before any tool executes.
-	toolbox := tools.Default(approve(false),
-		tools.WithOpenRouterSearch(client, evalModel),
-		tools.WithSandbox(t.TempDir()))
-	specs := toolbox.Specs()
+	// The teacher's own toolset, not the whole registry: tool selection is a
+	// property of the agent, and the teacher can only choose between the two
+	// tools it actually holds.
+	specs := teacherSpecs(t)
 
 	cases := []selectionCase{
-		{"Use run_code to print the 40th Fibonacci number", []string{"run_code"}, map[string]string{"language": "python"}},
-		{"What is 17 * 23?", nil, nil}, // negative: arithmetic, no tool
-		{"Who is the current Prime Minister of the UK?", []string{"openrouter_web_search"}, nil},
-		{"What's the weather like in Tokyo right now?", []string{"get_weather"}, map[string]string{"location": "Tokyo"}},
-		{"How windy is it in Chicago at the moment?", []string{"get_weather"}, map[string]string{"location": "Chicago"}},
-		{"What is the capital of France?", nil, nil}, // negative: knowledge, no tool
+		{"Is it 'a hour' or 'an hour'?", []string{tools.KnowledgeTool}, map[string]string{"query": "an"}},
+		{"When do I use the present perfect instead of the past simple?", []string{tools.KnowledgeTool}, map[string]string{"query": "perfect"}},
+		{"Correct this: she dont like when i writes letters.", []string{tools.KnowledgeTool}, nil},
+		// Not its job, and the point of the roster: the teacher has no tool that
+		// touches the machine, so the only right move is to hand over.
+		{"Delete the file /tmp/draft.txt for me.", []string{tools.HandoffTool}, map[string]string{"to": "operator"}},
+		{"Thanks, that was helpful!", nil, nil}, // negative: nothing to look up
 	}
 
 	passed := 0
@@ -101,7 +100,7 @@ func toolsChosen(t *testing.T, client *openrouter.OpenRouter, specs []components
 	res, err := client.Chat.Send(context.Background(), components.ChatRequest{
 		Model: openrouter.String(evalModel),
 		Messages: toSDK([]Msg{
-			{Role: "system", Text: SystemPrompt},
+			{Role: "system", Text: TeacherPrompt},
 			{Role: "user", Text: prompt},
 		}),
 		Tools:      specs,
@@ -188,4 +187,19 @@ func passLabel(ok bool) string {
 		return "PASS"
 	}
 	return "FAIL"
+}
+
+// teacherSpecs is the toolset the teacher is advertised, built the way
+// production builds it: the full registry, then the teacher's subset of it.
+// Advertising the whole registry instead would grade an agent that does not
+// exist — and would make "chose the right tool" easier than it really is.
+func teacherSpecs(t *testing.T) []components.ChatFunctionTool {
+	t.Helper()
+	registry := tools.Default(approve(false),
+		tools.WithKnowledge(corpusDir),
+		tools.WithSpecialists(map[string]string{
+			TeacherName:  TeacherPurpose,
+			OperatorName: OperatorPurpose,
+		}))
+	return registry.Subset(TeacherTools...).Specs()
 }
