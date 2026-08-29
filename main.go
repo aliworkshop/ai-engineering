@@ -28,6 +28,7 @@ import (
 	openrouter "github.com/OpenRouterTeam/go-sdk"
 	"github.com/aliworkshop/ai-engineering-course/internal/agent"
 	"github.com/aliworkshop/ai-engineering-course/internal/approval"
+	"github.com/aliworkshop/ai-engineering-course/internal/dbosrun"
 	"github.com/aliworkshop/ai-engineering-course/internal/durable"
 	"github.com/aliworkshop/ai-engineering-course/internal/events"
 	"github.com/aliworkshop/ai-engineering-course/internal/llm"
@@ -67,6 +68,7 @@ func main() {
 	denyID := flag.String("deny", "", "refuse the action a parked workflow is waiting on, then finish the run")
 	resumeID := flag.String("resume", "", "resume a workflow that stopped early")
 	ask := flag.String("ask", "", "answer one question and exit, printing nothing but the answer")
+	dbosAsk := flag.String("dbos", "", "answer one question with DBOS Transact holding the checkpoints instead of .harness/wf")
 	list := flag.Bool("list", false, "list workflows and their status")
 	audit := flag.Bool("audit", false, "read the event log back and report whether any tool call ran twice")
 	brittle := flag.Bool("brittle", false, "run WITHOUT the durable store — the pre-harness agent, for comparison")
@@ -102,6 +104,8 @@ func main() {
 		exitOn(resume(client, *resumeID))
 	case *ask != "":
 		exitOn(askOnce(client, *ask, *verbose))
+	case *dbosAsk != "":
+		exitOn(askOnDBOS(client, *dbosAsk))
 	case *addr != "":
 		serveWeb(*addr, client)
 	default:
@@ -275,6 +279,29 @@ func askOnce(client *openrouter.OpenRouter, question string, verbose bool) error
 		return err
 	}
 	fmt.Println(answer)
+	return nil
+}
+
+// askOnDBOS runs one question with DBOS Transact underneath instead of the
+// harness's own store — the same agent, the same tools, somebody else's durable
+// engine. See internal/dbosrun for the mapping between the two.
+//
+// It needs a Postgres URL in DBOS_SYSTEM_DATABASE_URL and says so plainly when
+// there isn't one, rather than half-starting and failing later.
+func askOnDBOS(client *openrouter.OpenRouter, question string) error {
+	emitter := bus(os.Stderr, false)
+
+	// The same toolbox the teacher holds, minus the handoff: DBOS is driving
+	// one workflow here, not a roster, and advertising a transfer nothing
+	// implements would be a lie told to the model.
+	registry := tools.Default(refuseAll{}, tools.WithKnowledge(corpusDir))
+	teacher := registry.Subset(tools.KnowledgeTool)
+
+	answer, err := dbosrun.Run(context.Background(), client, Model, teacher, emitter, question)
+	if err != nil {
+		return err
+	}
+	fmt.Println("\nagent>", answer)
 	return nil
 }
 

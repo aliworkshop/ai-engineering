@@ -495,6 +495,21 @@ func (a *Agent) send(ctx context.Context, messages []Msg, toolSpecs []components
 	return send(ctx, a.client, a.model, messages, toolSpecs)
 }
 
+// Think is one model call, outside the loop: given a conversation and a
+// toolset, what does the model want to do next?
+//
+// It is exported for one caller — the DBOS runner in internal/dbosrun, which
+// drives the same steps through a different durable engine. Sharing this rather
+// than letting that package write its own model call is what keeps the
+// comparison honest: the two engines are running the same agent.
+func Think(ctx context.Context, client *openrouter.OpenRouter, model string, messages []Msg, toolSpecs []components.ChatFunctionTool) (Msg, error) {
+	reply, err := send(ctx, client, model, messages, toolSpecs)
+	if err != nil {
+		return Msg{}, err
+	}
+	return fromAssistant(reply), nil
+}
+
 func send(ctx context.Context, client *openrouter.OpenRouter, model string, messages []Msg, toolSpecs []components.ChatFunctionTool) (components.ChatAssistantMessage, error) {
 	res, err := client.Chat.Send(ctx, components.ChatRequest{
 		Model:    openrouter.String(model),

@@ -51,6 +51,7 @@ go run . -v              # ...with the full harness event stream
 # proving the harness does what it says
 go run . -audit          # read the event log back: did any work happen twice?
 go run . -brittle        # the same agent with NO durable store, for contrast
+go run . -dbos "..."     # the same agent with DBOS Transact holding the checkpoints
 
 # the harness's own commands
 go run . -list           # workflows, and which are waiting on you
@@ -470,6 +471,7 @@ Two details that are easy to get wrong and worth stating:
 | 7 | Eval suite | `tools/*_test.go` + `agent/eval*_test.go` + `evalscore/` (relevancy) + `evals/` (Braintrust) |
 | 8 | See the harness while it runs | the inspector pane — `web/index.html`, `web.Session` on the event bus |
 | 9 | Check that nothing ran twice | `events.Audit` + `go run . -audit` |
+| 10 | Compare engines | the same agent on DBOS Transact — `internal/dbosrun` |
 
 ## Beyond the basics
 
@@ -628,6 +630,48 @@ happened twice.)
 the same crash — with `WithStore` left off. Nothing is checkpointed, `-list`
 shows no workflows, and a re-run starts from zero and does everything again.
 One line of wiring separates it from the harness, which is the point.
+
+## DBOS: the same agent on somebody else's engine (`internal/dbosrun`)
+
+```sh
+export DBOS_SYSTEM_DATABASE_URL="postgres://you@localhost:5432/agent_dbos"
+go run . -dbos "Is it 'a hour' or 'an hour'?"
+```
+
+`internal/durable` is about forty lines: a workflow is a JSON file, a step is a
+named entry in it, resuming means running the body again and reading completed
+steps out of the cache. Having built that, it is worth seeing the industrial
+version — not because DBOS is better, but because the thing you just built *is*
+the real idea, with the volume turned up.
+
+| `internal/durable` | DBOS Transact |
+|---|---|
+| `durable.Store` + `.harness/wf/*.json` | `dbos.NewContext` + Postgres tables |
+| `durable.Step(wf, name, fn)` | `dbos.RunAsStep(ctx, fn, WithStepName(name))` |
+| `-resume <id>`, and a replay loop | automatic recovery inside `dbos.Launch` |
+| `events.jsonl` + `-audit` | `dbos.operation_outputs`, queryable in SQL |
+| — | queues, timeouts, cancel, fork-from-step |
+
+The step names are the same on both sides, which is the clearest way to see that
+the two engines are doing one thing:
+
+```
+$ psql agent_dbos -c "select function_name from dbos.operation_outputs"
+ model-00
+ tool-call_YjF6wQm6jPYKbDBWDP4Uc7S9
+ model-01
+```
+
+The golden rule is identical in both: the workflow body must be deterministic,
+and everything that isn't — every model call, every tool — has to happen inside
+a step, or replay will not match.
+
+**What it costs, honestly.** The agent's own harness needs a directory and two
+dependencies. This needs a Postgres database, a driver, and a library that
+brings about thirty modules with it — `go.mod` now has three direct
+dependencies where the pitch was two. That trade is exactly why the hand-rolled
+version is worth understanding first, and why `-dbos` is a flag rather than the
+default.
 
 ## Tests
 
