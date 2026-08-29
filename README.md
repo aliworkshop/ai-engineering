@@ -6,8 +6,13 @@
 > built-in diagram renderers, `session-1` has no tools at all.
 
 An AI agent you talk to in a loop, **in the terminal or in a browser**. It
-answers from its own knowledge, searches the web, reports the weather, writes and
-runs scripts, edits files, and **asks a human before doing anything dangerous**.
+answers from its own knowledge, searches the web, reports the weather, runs code
+in a sandbox, and **asks a human before doing anything dangerous**.
+
+The tools that changed the machine have been taken out — this is the harness
+with a deliberately small toolset, waiting for the next agent's own tools. Every
+seam they hang off is still here and still tested: the approval gate, the
+operator specialist that holds anything dangerous, the sandbox bridge.
 
 Underneath it is **the harness** — the runtime layer between the agent loop and
 the real world, and the part most agents don't have until it bites them. One
@@ -18,7 +23,7 @@ sentence holds the whole design together:
 Kill the process mid-task and nothing is repeated when it resumes. Model-written
 code runs in a sandbox with no credentials and a timer. Context is assembled per
 turn against a token budget instead of growing forever. The agent you talk to
-literally cannot delete a file — it hands that to a specialist that can. And an
+literally cannot change anything — it hands that to a specialist that can. And an
 approval nobody answers parks the run on disk, where it costs nothing to wait
 three days.
 
@@ -163,8 +168,8 @@ socket in its own scratch dir:
 
 ```python
 import agent_tools
-text = agent_tools.call("read_file", path="go.mod")
-print(sum(1 for line in text.splitlines() if "require" in line))
+report = agent_tools.call("get_weather", location="Tokyo")
+print(report)
 ```
 
 Stated plainly: this stops accidents, runaway loops, and casual exfiltration. It
@@ -200,15 +205,20 @@ keep when the other agent is genuinely different — and the case that always
 qualifies is least privilege.
 
 ```
-assistant  read_file · get_weather · openrouter_web_search · run_code ·
-           investigate · handoff
-operator   read_file · write_file · edit_file · delete_file · run_code
+assistant  get_weather · openrouter_web_search · run_code · investigate · handoff
+operator   run_code   ← plus every tool that changes the machine
 ```
 
-The assistant cannot be *talked into* deleting a file, because there is no
-`delete_file` in its list to call. It hands over instead, and the switch is
+The assistant cannot be *talked into* deleting something, because the tool that
+would do it is not in its list to call. It hands over instead, and the switch is
 recorded in the workflow so a crash resumes as the operator. Run with `-v` to
 see the roster printed at startup.
+
+The operator's own list is down to `run_code` while the toolset carries nothing
+dangerous — the split is deliberately left wired up, so a new tool that changes
+the machine is added to `tools.Default` with an `Approver` and to
+`agent.OperatorTools` by name, and the routing, the gate and the durable park
+all apply to it from its first line.
 
 ### 6 · Supervision
 
@@ -254,6 +264,10 @@ run a second command — but it is now the fast path into that same step. And th
 front-ends can now tell "the human said no" from "no human answered", which used
 to be indistinguishable: a closed browser tab silently denied the action.
 Only a click or a keystroke is an answer. Everything else parks the run.
+
+The transcript below is the gate working on a file-writing tool — the kind of
+tool the operator exists to hold. The toolset ships without one at the moment;
+the machinery under it is what the walkthrough is about.
 
 ```
 $ go run .
@@ -303,12 +317,11 @@ Two details that are easy to get wrong and worth stating:
 |---|---|---|
 | 1 | Answer from own knowledge (no tool) | `agent.SystemPrompt` + loop returns when there are no tool calls — `agent/agent.go` |
 | 2 | Search the web | `NativeWebSearch` — OpenRouter's own `web` plugin — `tools/nativesearch.go` |
-| 3 | Write files and read them back | `WriteFile` + `ReadFile` — `tools/files.go` |
-| 4 | Edit existing files | `ReadFile` + `EditFile` — `tools/files.go` |
-| 5 | Human-in-the-loop before danger | `Approver` gate on write/edit/delete — `tools/*.go`, `ui/console.go`, `web/session.go`; made durable by `approval/` |
-| 6 | Eval suite | `tools/tools_test.go` + `agent/eval_test.go` + `agent/eval_single_test.go` |
+| 3 | Run code in a sandbox | `RunCode` + the tool bridge — `tools/code.go`, `sandbox/` |
+| 4 | Human-in-the-loop before danger | the `Approver` port every sensitive tool takes — `tools/tools.go`, `ui/console.go`, `web/session.go`; made durable by `approval/` |
+| 5 | Eval suite | `tools/tools_test.go` + `agent/eval_test.go` + `agent/eval_single_test.go` |
 
-## Beyond the six
+## Beyond the five
 
 - **`get_weather`** — current temperature and wind for a place, via Open-Meteo's
   free, keyless APIs (geocode the name, then fetch conditions). Read-only, no
@@ -417,11 +430,13 @@ go test ./... -short     # fast, offline, deterministic (no key, no network)
   error, an approval blocks the tool until the click and hands back exactly what
   was clicked, a stale or unwatched approval denies, an overlapping question is
   refused, and browsers don't share a history but follow-ups do.
-- **`tools` package** — unit evals: write/read roundtrip, edit, denial blocks the
-  action, read-only tools never prompt, unknown tool handled, live web search,
-  and the least-privilege seams — every dangerous tool declares itself
-  sensitive, sandboxed code never sees one, and a restricted subset cannot
-  dispatch what it does not hold.
+- **`tools` package** — unit evals: a gated tool acts only on a yes and does
+  nothing on a no, a read-only tool never reaches the human, unknown tool
+  handled, live web search, and the least-privilege seams — a sensitive tool
+  declares itself, sandboxed code never sees one, and a restricted subset cannot
+  dispatch what it does not hold. The gated tool these use is a stub defined in
+  the test file, so the seams stay covered no matter which real tools the
+  toolset happens to carry.
 - **`durable` package** — the claim the package exists to make, measured: a
   crashed run resumes without re-executing a single completed step, a failed step
   is *not* checkpointed so it can be retried, state survives through a brand new
@@ -464,7 +479,8 @@ go test ./... -short     # fast, offline, deterministic (no key, no network)
   [`evals/README.md`](evals/README.md).
 - **`agent` package, live evals** (skipped with `-short` or without a key):
   - *behavioral* (`eval_test.go`) — whole tasks through the real model, graded
-    on which tools it chose, its answer, and the actual side effects on disk.
+    on which tools it chose, its answer, and — for a task whose answer it could
+    not have guessed — whether it really ran the work rather than reporting it.
   - *tool selection* (`eval_single_test.go`) — one-shot: does the model pick the
     right tool, with the right arguments, on the first step? Never executes.
   - *context budget* (`compact_smoke_test.go`) — asks five questions under an

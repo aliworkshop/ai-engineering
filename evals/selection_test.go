@@ -56,13 +56,13 @@ func TestToolSelectionEval(t *testing.T) {
 
 	// A real registry, so the specs advertised are exactly the ones production
 	// advertises. The approver is never called — we stop before any tool runs.
-	toolbox := tools.Default(approve(false), tools.WithOpenRouterSearch(model, evalModel))
+	toolbox := tools.Default(approve(false),
+		tools.WithOpenRouterSearch(model, evalModel),
+		tools.WithSandbox(t.TempDir()))
 	specs := toolbox.Specs()
 
 	dataset := eval.NewDataset([]eval.Case[selectionInput, selectionOutput]{
-		{Input: selectionInput{"Read the contents of go.mod", []string{"read_file"}, map[string]string{"path": "go.mod"}}, Tags: []string{"read"}},
-		{Input: selectionInput{"Create hello.txt containing 'hi'", []string{"write_file"}, map[string]string{"path": "hello.txt", "content": "hi"}}, Tags: []string{"write"}},
-		{Input: selectionInput{"Delete the file /tmp/old.log", []string{"delete_file"}, map[string]string{"path": "old.log"}}, Tags: []string{"delete"}},
+		{Input: selectionInput{"Use run_code to print the 40th Fibonacci number", []string{"run_code"}, map[string]string{"language": "python"}}, Tags: []string{"code-mode"}},
 		{Input: selectionInput{"What is 17 * 23?", nil, nil}, Tags: []string{"arithmetic", "negative"}},
 		{Input: selectionInput{"Who is the current Prime Minister of the UK?", []string{"openrouter_web_search"}, nil}, Tags: []string{"search"}},
 		{Input: selectionInput{"What's the weather like in Tokyo right now?", []string{"get_weather"}, map[string]string{"location": "Tokyo"}}, Tags: []string{"weather"}},

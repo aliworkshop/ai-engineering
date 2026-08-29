@@ -3,10 +3,10 @@ package tools
 import (
 	"context"
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/OpenRouterTeam/go-sdk/models/components"
 )
 
 // approve is a stub human: it says yes or no to every approval request.
@@ -23,6 +23,46 @@ func (r refuseToBeAsked) Confirm(action string) bool {
 	return false
 }
 
+// gated stands in for a tool that changes the world. The toolset ships without
+// one at the moment, and what these tests are about is the gate rather than any
+// particular tool behind it: it declares itself Sensitive, it asks the Approver
+// first, and a "no" means nothing happened.
+type gated struct {
+	Approver Approver
+	ran      *bool
+}
+
+func (gated) Sensitive() bool { return true }
+
+func (gated) Spec() components.ChatFunctionTool {
+	return defineTool("change_thing", "Change something outside the agent. Requires human approval.",
+		`{"type":"object","properties":{"what":{"type":"string"}},"required":["what"]}`)
+}
+
+func (t gated) Run(_ context.Context, args string) (string, error) {
+	var a struct {
+		What string `json:"what"`
+	}
+	if err := decode(args, &a); err != nil {
+		return "", err
+	}
+	if !t.Approver.Confirm("Change " + a.What + "?") {
+		return "Denied by the human.", nil
+	}
+	*t.ran = true
+	return "Changed " + a.What + ".", nil
+}
+
+// harmless is a read-only tool that needs neither network nor approval, so a
+// test can dispatch something and watch the gate stay out of the way.
+type harmless struct{}
+
+func (harmless) Spec() components.ChatFunctionTool {
+	return defineTool("say_hello", "Return a greeting.", `{"type":"object","properties":{}}`)
+}
+
+func (harmless) Run(context.Context, string) (string, error) { return "hello", nil }
+
 // jsonArgs builds a tool's JSON argument string the way the model would.
 func jsonArgs(t *testing.T, m map[string]any) string {
 	t.Helper()
@@ -33,80 +73,43 @@ func jsonArgs(t *testing.T, m map[string]any) string {
 	return string(b)
 }
 
-// Requirement 3: write a file to disk, read back what landed there.
-func TestWriteReadRoundtrip(t *testing.T) {
-	reg := Default(approve(true))
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "result.txt")
+// A gated tool acts only after the human says yes.
+func TestGatedToolActsOnlyOnApproval(t *testing.T) {
+	var ran bool
+	reg := Default(approve(true), WithExtra(gated{Approver: approve(true), ran: &ran}))
 
-	if got := reg.Dispatch(ctx, "write_file", jsonArgs(t, map[string]any{
-		"path":    path,
-		"content": "agent works\n",
-	})); !strings.Contains(got, "Wrote") {
-		t.Fatalf("write_file: %q", got)
+	if got := reg.Dispatch(context.Background(), "change_thing", jsonArgs(t, map[string]any{
+		"what": "the config",
+	})); !strings.Contains(got, "Changed") {
+		t.Fatalf("change_thing: %q", got)
 	}
-	if got := reg.Dispatch(ctx, "read_file", jsonArgs(t, map[string]any{
-		"path": path,
-	})); !strings.Contains(got, "agent works") {
-		t.Fatalf("read_file got %q, want it to contain 'agent works'", got)
-	}
-}
-
-// Requirement 4: edit an existing file.
-func TestEditFile(t *testing.T) {
-	reg := Default(approve(true))
-	dir := t.TempDir()
-	path := filepath.Join(dir, "note.txt")
-	os.WriteFile(path, []byte("hello world"), 0o644)
-
-	if got := reg.Dispatch(context.Background(), "edit_file", jsonArgs(t, map[string]any{
-		"path": path, "old_string": "world", "new_string": "gophers",
-	})); !strings.Contains(got, "Edited") {
-		t.Fatalf("edit_file: %q", got)
-	}
-	if b, _ := os.ReadFile(path); string(b) != "hello gophers" {
-		t.Fatalf("file is %q, want %q", string(b), "hello gophers")
+	if !ran {
+		t.Fatal("the tool reported success without doing anything")
 	}
 }
 
 // Requirement 5: a "no" at the human-in-the-loop prompt blocks the action.
 func TestHumanInLoopDenies(t *testing.T) {
-	reg := Default(approve(false)) // human says NO to everything
-	ctx := context.Background()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "should-not-exist.txt")
+	var ran bool
+	reg := Default(approve(false), WithExtra(gated{Approver: approve(false), ran: &ran}))
 
-	if got := reg.Dispatch(ctx, "write_file", jsonArgs(t, map[string]any{
-		"path": path, "content": "nope",
+	if got := reg.Dispatch(context.Background(), "change_thing", jsonArgs(t, map[string]any{
+		"what": "the config",
 	})); !strings.Contains(got, "Denied") {
 		t.Fatalf("expected denial, got %q", got)
 	}
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Fatalf("file was written despite denial")
-	}
-	keep := filepath.Join(dir, "keep.txt")
-	os.WriteFile(keep, []byte("still here"), 0o644)
-	if got := reg.Dispatch(ctx, "delete_file", jsonArgs(t, map[string]any{
-		"path": keep,
-	})); !strings.Contains(got, "Denied") {
-		t.Fatalf("delete_file should have been denied, got %q", got)
-	}
-	if _, err := os.Stat(keep); err != nil {
-		t.Fatalf("file was deleted despite denial")
+	if ran {
+		t.Fatal("the action happened despite the denial")
 	}
 }
 
-// Read-only tools must never trigger the human-in-the-loop prompt.
+// Dispatch adds no gate of its own: a tool that isn't sensitive never reaches
+// the human, however dangerous the surrounding toolset is.
 func TestReadOnlyToolsNeedNoApproval(t *testing.T) {
-	reg := Default(refuseToBeAsked{t})
-	dir := t.TempDir()
-	path := filepath.Join(dir, "r.txt")
-	os.WriteFile(path, []byte("readable"), 0o644)
+	reg := Default(refuseToBeAsked{t}, WithExtra(harmless{}))
 
-	if got := reg.Dispatch(context.Background(), "read_file", jsonArgs(t, map[string]any{
-		"path": path,
-	})); got != "readable" {
-		t.Fatalf("read_file got %q", got)
+	if got := reg.Dispatch(context.Background(), "say_hello", "{}"); got != "hello" {
+		t.Fatalf("say_hello got %q", got)
 	}
 }
 

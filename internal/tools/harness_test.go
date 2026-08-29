@@ -19,12 +19,11 @@ func (yes) Confirm(string) bool { return true }
 // from sandboxed code and from the generalist agent — so it is worth an
 // explicit test rather than a convention.
 func TestSensitiveToolsAreDeclared(t *testing.T) {
-	registry := Default(yes{})
+	var ran bool
+	registry := Default(yes{}, WithExtra(gated{Approver: yes{}, ran: &ran}))
 
-	dangerous := map[string]bool{
-		"write_file": true, "edit_file": true, "delete_file": true,
-	}
-	safe := map[string]bool{"read_file": true, "get_weather": true}
+	dangerous := map[string]bool{"change_thing": true}
+	safe := map[string]bool{"get_weather": true}
 
 	for _, name := range registry.Names() {
 		tool := registry.byName[name]
@@ -46,7 +45,9 @@ func TestSensitiveToolsAreDeclared(t *testing.T) {
 // TestSandboxSeesNoDangerousTools is the Part 3 promise, checked at the seam
 // where it is actually decided.
 func TestSandboxSeesNoDangerousTools(t *testing.T) {
-	registry := Default(yes{}, WithSandbox(t.TempDir()))
+	var ran bool
+	registry := Default(yes{}, WithSandbox(t.TempDir()),
+		WithExtra(gated{Approver: yes{}, ran: &ran}))
 
 	exposed := sandboxable(registry)
 	for _, name := range exposed {
@@ -75,13 +76,15 @@ func TestSandboxSeesNoDangerousTools(t *testing.T) {
 // TestSubsetIsLeastPrivilege: an agent given a subset holds exactly that, and a
 // tool it does not hold is not merely discouraged — it is not there.
 func TestSubsetIsLeastPrivilege(t *testing.T) {
-	registry := Default(yes{})
-	assistant := registry.Subset("read_file", "get_weather")
+	var ran bool
+	registry := Default(yes{}, WithSandbox(t.TempDir()),
+		WithExtra(gated{Approver: yes{}, ran: &ran}))
+	assistant := registry.Subset("get_weather", "run_code")
 
 	if len(assistant.Names()) != 2 {
 		t.Fatalf("subset holds %v, want exactly the two named", assistant.Names())
 	}
-	for _, forbidden := range []string{"write_file", "edit_file", "delete_file"} {
+	for _, forbidden := range []string{"change_thing"} {
 		if assistant.Has(forbidden) {
 			t.Fatalf("%s leaked into the restricted subset", forbidden)
 		}
@@ -92,13 +95,13 @@ func TestSubsetIsLeastPrivilege(t *testing.T) {
 	if got := len(assistant.Specs()); got != 2 {
 		t.Fatalf("subset advertises %d tools, holds 2", got)
 	}
-	if out := assistant.Dispatch(context.Background(), "delete_file", `{"path":"x"}`); !strings.Contains(out, "unknown tool") {
+	if out := assistant.Dispatch(context.Background(), "change_thing", `{"what":"x"}`); !strings.Contains(out, "unknown tool") {
 		t.Fatalf("a restricted agent dispatched a tool it does not hold: %q", out)
 	}
 
 	// A name that doesn't exist is skipped, not fatal: a roster is
 	// configuration, and a typo in it should not take the process down.
-	if got := registry.Subset("read_file", "no_such_tool").Names(); len(got) != 1 {
+	if got := registry.Subset("get_weather", "no_such_tool").Names(); len(got) != 1 {
 		t.Fatalf("unknown names should be skipped, got %v", got)
 	}
 }

@@ -57,13 +57,13 @@ func TestEvalToolSelection(t *testing.T) {
 
 	// A real registry so we advertise the exact specs production uses. The
 	// approver is never called — we stop before any tool executes.
-	toolbox := tools.Default(approve(false), tools.WithOpenRouterSearch(client, evalModel))
+	toolbox := tools.Default(approve(false),
+		tools.WithOpenRouterSearch(client, evalModel),
+		tools.WithSandbox(t.TempDir()))
 	specs := toolbox.Specs()
 
 	cases := []selectionCase{
-		{"Read the contents of go.mod", []string{"read_file"}, map[string]string{"path": "go.mod"}},
-		{"Create hello.txt containing 'hi'", []string{"write_file"}, map[string]string{"path": "hello.txt", "content": "hi"}},
-		{"Delete the file /tmp/old.log", []string{"delete_file"}, map[string]string{"path": "old.log"}},
+		{"Use run_code to print the 40th Fibonacci number", []string{"run_code"}, map[string]string{"language": "python"}},
 		{"What is 17 * 23?", nil, nil}, // negative: arithmetic, no tool
 		{"Who is the current Prime Minister of the UK?", []string{"openrouter_web_search"}, nil},
 		{"What's the weather like in Tokyo right now?", []string{"get_weather"}, map[string]string{"location": "Tokyo"}},

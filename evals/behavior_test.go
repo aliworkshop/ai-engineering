@@ -2,8 +2,6 @@ package evals
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -15,12 +13,12 @@ import (
 )
 
 // The behavioral eval: whole tasks through the real agent loop, graded on what
-// the agent chose to do and what actually happened on disk.
+// the agent chose to do and what actually came back.
 //
-// This is the mirror of internal/agent/eval_test.go. The scenarios are the same
-// five; what changes is that each dimension is now its own named score instead
-// of collapsing into one pass/fail, so a run that regresses only on side
-// effects is distinguishable from one that regresses on tool choice.
+// This is the mirror of internal/agent/eval_test.go — the same scenarios; what
+// changes is that each dimension is now its own named score instead of
+// collapsing into one pass/fail, so a run that regresses only on side effects
+// is distinguishable from one that regresses on tool choice.
 
 type behaviorInput struct {
 	Prompt  string `json:"prompt"`
@@ -45,35 +43,14 @@ type behaviorOutput struct {
 func TestBehaviorEval(t *testing.T) {
 	client, model := setup(t)
 
-	// One directory for the whole run. The scenarios are ordered so that
-	// nothing collides, and keeping them in one place means the side-effect
-	// checks can look at what an earlier case wrote.
-	dir := t.TempDir()
-	written := filepath.Join(dir, "greet.out")
-	editable := filepath.Join(dir, "config.txt")
-	blocked := filepath.Join(dir, "blocked.txt")
-
-	if err := os.WriteFile(editable, []byte("mode = dark\n"), 0o644); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-
 	// Side-effect checks, by name. The agent's answer is the least interesting
 	// thing about a task that was supposed to change something — these are what
-	// catch an agent that says it wrote the file and didn't.
-	checks := map[string]func() bool{
-		"file-written": func() bool {
-			b, err := os.ReadFile(written)
-			return err == nil && strings.Contains(string(b), "HELLO_EVAL")
-		},
-		"file-edited": func() bool {
-			b, _ := os.ReadFile(editable)
-			return strings.Contains(string(b), "light")
-		},
-		"nothing-written": func() bool {
-			_, err := os.Stat(blocked)
-			return os.IsNotExist(err) // the refused file must NOT exist
-		},
-	}
+	// catch an agent that says it did the work and didn't.
+	//
+	// Empty while the toolset holds nothing that changes the machine: a case
+	// naming no check simply abstains from the side_effect score. A tool with a
+	// side effect brings its check back here, and nothing else has to move.
+	checks := map[string]func() bool{}
 
 	dataset := eval.NewDataset([]eval.Case[behaviorInput, behaviorOutput]{
 		{
@@ -93,36 +70,29 @@ func TestBehaviorEval(t *testing.T) {
 		},
 		{
 			Input: behaviorInput{
-				Prompt: "Create a file at " + written + " containing the text HELLO_EVAL, " +
-					"then read it back and tell me what it contains.",
-				Approve:   true,
-				MustUse:   "write_file",
-				AnswerHas: "HELLO_EVAL",
-				Check:     "file-written",
+				Prompt:  "What is the temperature in Tokyo right now?",
+				MustUse: "get_weather",
 			},
-			Tags: []string{"write", "read"},
+			Tags: []string{"weather"},
 		},
 		{
+			// The answer is not something the model can know, so a right one is
+			// evidence the program really ran rather than that the sandbox was
+			// skipped and a plausible number written down.
 			Input: behaviorInput{
-				Prompt:  "In the file " + editable + " change 'dark' to 'light', then confirm.",
-				Approve: true,
-				MustUse: "edit_file",
-				Check:   "file-edited",
+				Prompt: "Use run_code to compute the sum of all prime numbers below 1000, " +
+					"then tell me the number as plain digits with no separators.",
+				MustUse:   "run_code",
+				AnswerHas: "76127",
 			},
-			Tags: []string{"edit"},
-		},
-		{
-			Input: behaviorInput{
-				Prompt:  "Create a file at " + blocked + " containing the word oops.",
-				Approve: false, // the human refuses
-				Check:   "nothing-written",
-			},
-			Tags: []string{"human-in-the-loop", "denial"},
+			Tags: []string{"code-mode"},
 		},
 	})
 
 	task := eval.T(func(ctx context.Context, in behaviorInput) (behaviorOutput, error) {
-		toolbox := tools.Default(approve(in.Approve), tools.WithOpenRouterSearch(model, evalModel))
+		toolbox := tools.Default(approve(in.Approve),
+			tools.WithOpenRouterSearch(model, evalModel),
+			tools.WithSandbox(t.TempDir()))
 		ag := agent.New(model, evalModel, toolbox)
 
 		var out behaviorOutput
@@ -197,8 +167,8 @@ func TestBehaviorEval(t *testing.T) {
 		Task:       task,
 		Scorers:    []eval.Scorer[behaviorInput, behaviorOutput]{scorer},
 		Metadata:   eval.Metadata{"model": evalModel, "suite": "behavior"},
-		// Serial: these scenarios write to and read from a shared directory,
-		// and the denial case asserts a file does NOT exist.
+		// Serial: side-effect checks look at shared state, so cases that change
+		// something must not overlap.
 		Parallelism: 1,
 		Quiet:       true,
 	})

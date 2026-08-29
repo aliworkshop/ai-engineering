@@ -151,8 +151,8 @@ func harness(client *openrouter.OpenRouter, approver *approverOf, emitter events
 	)
 
 	// An agent is data: a name, a prompt, and the subset of tools it holds
-	// (Part 5). The assistant simply does not have write_file, edit_file, or
-	// delete_file — it hands those to the operator.
+	// (Part 5). Whatever changes the machine belongs to the operator; the
+	// assistant does not hold it, and hands the work over instead.
 	roster[agent.AssistantName] = agent.Spec{
 		Name: agent.AssistantName, Purpose: agent.AssistantPurpose,
 		Prompt: agent.AssistantPrompt, Tools: registry.Subset(agent.AssistantTools...),

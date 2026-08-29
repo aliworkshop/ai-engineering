@@ -39,10 +39,10 @@ func (t RunCode) Spec() components.ChatFunctionTool {
 	//
 	// The blunt sentence about the scratch directory is there because of an
 	// observed failure: handed a sandbox, a model's first instinct is
-	// open("go.mod") — which fails with a FileNotFoundError naming a temp path
+	// open("data.txt") — which fails with a FileNotFoundError naming a temp path
 	// it has never heard of, and it then burns two more turns trying variations
-	// of the same wrong idea. Saying "your cwd is empty, files come from
-	// read_file" up front costs nine words and saves the whole detour.
+	// of the same wrong idea. Saying "your cwd is empty, everything outside it
+	// comes from a tool" up front costs nine words and saves the whole detour.
 	available := "none"
 	if len(t.Expose) > 0 {
 		available = strings.Join(t.Expose, ", ")
@@ -54,10 +54,10 @@ func (t RunCode) Spec() components.ChatFunctionTool {
 			"filtering, counting, or calculating over the result: write ONE program that does the "+
 			"whole job.\n"+
 			"The sandbox starts in an EMPTY throwaway directory and cannot see the user's files, "+
-			"the network, or any credentials. To read a real file you must go through the tool "+
-			"bridge — open() will not find it.\n"+
-			"In python:  import agent_tools; text = agent_tools.call(\"read_file\", path=\"go.mod\")\n"+
-			"In bash:    ./tools read_file '{\"path\":\"go.mod\"}'\n"+
+			"the network, or any credentials. Anything from outside must come through the tool "+
+			"bridge — open() and requests will not reach it.\n"+
+			"In python:  import agent_tools; text = agent_tools.call(\"get_weather\", location=\"Tokyo\")\n"+
+			"In bash:    ./tools get_weather '{\"location\":\"Tokyo\"}'\n"+
 			"Tools available inside the sandbox: "+available+".\n"+
 			"Print what you want to see — stdout is the result.",
 		`{"type":"object","properties":{`+
@@ -153,10 +153,10 @@ func hintFor(result sandbox.Result, expose []string) string {
 		!strings.Contains(result.Output, "No such file or directory") {
 		return ""
 	}
-	return "The sandbox directory is empty — it cannot see the user's files. Read them " +
-		"through the bridge instead: agent_tools.call(\"read_file\", path=\"...\") in python, " +
-		"or ./tools read_file '{\"path\":\"...\"}' in bash. Available: " +
-		strings.Join(expose, ", ") + "."
+	return "The sandbox directory is empty — it cannot see the user's files or the network. " +
+		"Anything from outside has to come through the bridge instead: " +
+		"agent_tools.call(\"<tool>\", ...) in python, or ./tools <tool> '{...}' in bash. " +
+		"Available: " + strings.Join(expose, ", ") + "."
 }
 
 // runtimeFor maps the advertised languages onto an interpreter. Keeping the

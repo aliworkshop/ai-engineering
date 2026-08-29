@@ -47,8 +47,8 @@ func WithOpenRouterSearch(client *openrouter.OpenRouter, model string) Option {
 // It is opt-in rather than always-on because it changes how the agent solves
 // things: given run_code, a model will often write one program where it would
 // otherwise have made four tool calls. That is the win, but a test that asserts
-// a task must use the plain file tools wants the old shape, and should not have
-// to be rewritten to keep passing.
+// a task must reach for a particular tool wants the old shape, and should not
+// have to be rewritten to keep passing.
 func WithSandbox(dir string) Option {
 	return func(s *settings) { s.sandboxDir = dir }
 }
@@ -63,6 +63,11 @@ func WithSpecialists(specialists map[string]string) Option {
 // Default builds the standard toolset, wiring the human-in-the-loop approver
 // into every dangerous tool. This is the single place that decides which tools
 // the agent has and which of them are gated.
+//
+// Nothing in the set is dangerous at the moment, so approver goes unused — it
+// stays in the signature because the gate is a property of the toolset, not of
+// any one tool: the next tool that changes the machine is constructed here with
+// it, and is gated from its first line.
 func Default(approver Approver, opts ...Option) *Registry {
 	var s settings
 	for _, opt := range opts {
@@ -72,7 +77,6 @@ func Default(approver Approver, opts ...Option) *Registry {
 
 	// read-only — no approval.
 	list := []Tool{
-		ReadFile{},
 		GetWeather{HTTP: client},
 	}
 	if s.searchClient != nil {
@@ -93,12 +97,9 @@ func Default(approver Approver, opts ...Option) *Registry {
 	}
 	list = append(list, s.extra...)
 
-	// dangerous — approval required
-	list = append(list,
-		WriteFile{Approver: approver},
-		EditFile{Approver: approver},
-		DeleteFile{Approver: approver},
-	)
+	// dangerous — approval required. Empty for now; a tool added here takes
+	// Approver: approver and declares Sensitive() so the rest of the harness —
+	// the sandbox bridge, the roster, the durable gate — picks it up for free.
 
 	registry := NewRegistry(list...)
 

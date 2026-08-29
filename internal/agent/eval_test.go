@@ -5,7 +5,8 @@ package agent
 // Where the tools package unit-tests each tool deterministically, this runs
 // whole tasks through the REAL agent loop and grades the outcome: did it answer
 // without a tool when it should, reach for openrouter_web_search when it needed
-// facts, actually write a file, edit one, and respect a "no"?
+// facts, call get_weather rather than guessing, and actually compute a number
+// in the sandbox instead of inventing one?
 //
 // Run:  go test ./internal/agent -run Eval -v
 // (needs OPENROUTER_API_KEY; skipped with -short)
@@ -13,7 +14,6 @@ package agent
 import (
 	"context"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -53,12 +53,6 @@ func TestEvalAgentBehavior(t *testing.T) {
 	}
 	client := llm.NewOpenRouter(key)
 
-	dir := t.TempDir()
-	written := filepath.Join(dir, "greet.out")
-	editable := filepath.Join(dir, "config.txt")
-	os.WriteFile(editable, []byte("mode = dark\n"), 0o644)
-	blocked := filepath.Join(dir, "blocked.txt")
-
 	scenarios := []scenario{
 		{
 			name:       "knowledge/no-tool",
@@ -72,41 +66,28 @@ func TestEvalAgentBehavior(t *testing.T) {
 			mustUseTool: "openrouter_web_search",
 		},
 		{
-			name:        "write+read file",
-			prompt:      "Create a file at " + written + " containing the text HELLO_EVAL, then read it back and tell me what it contains.",
-			approve:     true,
-			mustUseTool: "write_file",
-			answerHas:   "HELLO_EVAL",
-			check: func(t *testing.T) bool {
-				b, err := os.ReadFile(written)
-				return err == nil && strings.Contains(string(b), "HELLO_EVAL")
-			},
+			name:        "weather",
+			prompt:      "What is the temperature in Tokyo right now?",
+			mustUseTool: "get_weather",
 		},
 		{
-			name:        "edit existing file",
-			prompt:      "In the file " + editable + " change 'dark' to 'light', then confirm.",
-			approve:     true,
-			mustUseTool: "edit_file",
-			check: func(t *testing.T) bool {
-				b, _ := os.ReadFile(editable)
-				return strings.Contains(string(b), "light")
-			},
-		},
-		{
-			name:    "human-in-the-loop denial",
-			prompt:  "Create a file at " + blocked + " containing the word oops.",
-			approve: false, // human refuses
-			check: func(t *testing.T) bool {
-				_, err := os.Stat(blocked)
-				return os.IsNotExist(err) // file must NOT exist
-			},
+			// The answer is not something the model can know, so a right one is
+			// evidence the program really ran rather than that the sandbox was
+			// skipped and a plausible number written down.
+			name: "sandboxed code",
+			prompt: "Use run_code to compute the sum of all prime numbers below 1000, " +
+				"then tell me the number as plain digits with no separators.",
+			mustUseTool: "run_code",
+			answerHas:   "76127",
 		},
 	}
 
 	passed := 0
 	for _, sc := range scenarios {
 		t.Run(sc.name, func(t *testing.T) {
-			toolbox := tools.Default(approve(sc.approve), tools.WithOpenRouterSearch(client, evalModel))
+			toolbox := tools.Default(approve(sc.approve),
+				tools.WithOpenRouterSearch(client, evalModel),
+				tools.WithSandbox(t.TempDir()))
 			ag := New(client, evalModel, toolbox)
 
 			var used []string

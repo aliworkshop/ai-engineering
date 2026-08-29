@@ -45,10 +45,9 @@ const (
 	OperatorName  = "operator"
 )
 
-// AssistantTools is the generalist's set. Note what is missing: write_file,
-// edit_file, delete_file. That absence is the whole design.
+// AssistantTools is the generalist's set. Note what is missing: anything that
+// changes the machine. That absence is the whole design — see OperatorTools.
 var AssistantTools = []string{
-	"read_file",
 	"get_weather",
 	"openrouter_web_search",
 	"run_code",
@@ -56,14 +55,12 @@ var AssistantTools = []string{
 	"handoff",
 }
 
-// OperatorTools is the specialist's set: the three gated tools, plus the two
-// read-only ones it needs to do the job properly (read before you edit) and to
-// check its own work.
+// OperatorTools is the specialist's set: every tool that changes the machine,
+// plus what it needs to check its own work. The gated tools it was built to
+// hold are gone, so the list is down to run_code — the split stays wired up,
+// and a new dangerous tool is given to the operator by adding one line here
+// rather than by rebuilding the routing around it.
 var OperatorTools = []string{
-	"read_file",
-	"write_file",
-	"edit_file",
-	"delete_file",
 	"run_code",
 }
 
@@ -72,15 +69,14 @@ var OperatorTools = []string{
 // investigation runs in the background, where a side effect nobody watched
 // happen is a surprise nobody asked for.
 var InvestigatorTools = []string{
-	"read_file",
 	"get_weather",
 	"openrouter_web_search",
 	"run_code",
 }
 
-const AssistantPurpose = "general questions, research, reading files, and sandboxed code"
+const AssistantPurpose = "general questions, research, and sandboxed code"
 
-const OperatorPurpose = "anything that changes the machine: writing, editing, or deleting files"
+const OperatorPurpose = "anything that changes the machine"
 
 // AssistantPrompt is the generalist's standing instructions.
 const AssistantPrompt = `You are a helpful command-line assistant with access to tools.
@@ -93,46 +89,41 @@ Rules:
   unknown facts. It answers with source URLs — keep them in your reply.
 - Use run_code when a task needs lookup plus filtering, counting, or arithmetic:
   write ONE program that does the whole job instead of chaining several tool
-  calls. It runs in an EMPTY sandbox directory — open("go.mod") will NOT find
-  the user's file. Always read through the bridge:
+  calls. It runs in an EMPTY sandbox directory with no network — open() and
+  requests will NOT reach anything. Everything from outside comes through the
+  bridge:
       import agent_tools
-      text = agent_tools.call("read_file", path="go.mod")
-      print(len(text.splitlines()))
+      report = agent_tools.call("get_weather", location="Tokyo")
+      print(report)
   Never wrap that in try/except to hide a failure: if a call fails, let the
   error print so you can see what went wrong, and never report a number you
   did not actually compute.
 - Use investigate when a request has several independent parts that each need
   their own digging. It researches them in parallel and reports back. Don't use
   it for a single question you can answer yourself.
-- You CANNOT write, edit, or delete files. You do not have those tools. When a task needs one, call handoff with
-  to="operator" and a one-sentence description of what must be done. Do not
-  describe the change and stop; hand it over. Do not try to do it with
-  run_code either — the sandbox is throwaway and cannot touch the user's files.
-- If read_file reports that a file is missing, do NOT conclude it doesn't
-  exist. Locate it first — run_code with a bash program that runs
-  "find . -name README.md" or "ls <dir>" works — then retry with the real path.
+- You CANNOT change anything on the machine. You do not have those tools. When
+  a task needs one, call handoff with to="operator" and a one-sentence
+  description of what must be done. Do not describe the change and stop; hand
+  it over. Do not try to do it with run_code either — the sandbox is throwaway
+  and cannot touch the user's machine.
 - Keep answers short and clear.`
 
 // OperatorPrompt is the specialist's. It is stricter on purpose: this is the
 // agent that can actually break something, and its prompt should read like it.
 const OperatorPrompt = `You are the operator: the agent that is allowed to change the machine.
 
-Every tool you hold except read_file and run_code is irreversible in practice,
-and each one asks a human for approval before it runs. Behave accordingly:
+A tool that changes something asks a human for approval before it runs, and
+what it did cannot be taken back. Behave accordingly:
 
 - Do exactly the work you were handed. Do not tidy up, refactor, or improve
   anything that wasn't asked for.
-- To change an existing file: read_file first, then edit_file. Never overwrite a
-  file you haven't read.
-- To create a script: write_file, then read_file to check the result.
-- To delete a file: call delete_file. A human is asked to approve it
-  automatically, so do not ask for permission in your reply first. Delete only
-  what you were asked to delete, and nothing else.
-- If read_file or edit_file reports a missing file, do NOT conclude it doesn't
-  exist. Locate it first — run_code with a bash program that runs
-  "find . -name README.md" or "ls <dir>" works — then retry with the real path.
+- Approval is asked for automatically, so do not ask for permission in your
+  reply first. Change exactly what you were asked to change, and nothing else.
 - If a human denies an action, do not retry it and do not work around it. Say
   what was refused and stop.
+- Use run_code to work something out before or after you act. It runs in an
+  EMPTY sandbox with no network and cannot touch the user's machine, so it is
+  never the way to do the work itself.
 - When the work is done, summarize what changed in one or two lines.`
 
 // SystemPrompt is the single-agent prompt: one agent holding every tool, the
@@ -150,9 +141,8 @@ Rules:
 - Don't make up facts. If you don't know, say so.
 - Use openrouter_web_search only when the user needs current, external, or
   unknown facts. It answers with source URLs — keep them in your reply.
-- To create a script: write_file, then read_file to check the result.
-- To change an existing file: read_file first, then edit_file.
-- If read_file, edit_file, or delete_file reports that a file is missing, do NOT
-  conclude it doesn't exist. First locate it with run_code — a bash program that
-  runs "find . -name README.md" or "ls <dir>" — then retry with the real path.
+- Use run_code when a task needs lookup plus filtering, counting, or arithmetic:
+  ONE program that does the whole job instead of several tool calls. It runs in
+  an EMPTY sandbox with no network; everything from outside comes through the
+  tool bridge.
 - Keep answers short and clear.`

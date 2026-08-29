@@ -7,7 +7,7 @@ away.
 ```sh
 cd evals
 go test -v                              # both suites
-go test -run TestToolSelectionEval -v   # the cheap one (8 model calls, ~4s)
+go test -run TestToolSelectionEval -v   # the cheap one (6 model calls, ~4s)
 ```
 
 Needs `OPENROUTER_API_KEY` and `BRAINTRUST_API_KEY` in `../.env`. Missing either
@@ -17,11 +17,12 @@ one skips rather than fails, with a message naming which.
 
 | Suite | Cases | Scores | Notes |
 |---|---|---|---|
-| `tool-selection` | 8 | `correct_tool`, `correct_args` | One model call each, nothing executes. Cheapest signal, most sensitive to prompt edits. |
-| `behavior` | 5 | `tool_choice`, `answer_match`, `side_effect` | Whole tasks through the real loop, graded on what landed on disk. |
+| `tool-selection` | 6 | `correct_tool`, `correct_args` | One model call each, nothing executes. Cheapest signal, most sensitive to prompt edits. |
+| `behavior` | 4 | `tool_choice`, `answer_match`, `side_effect` | Whole tasks through the real loop, graded on what the agent chose and what came back. |
 
 Scores abstain individually — `answer_match` applies only to the cases that
-name an expected answer, `side_effect` only to the ones that change the disk.
+name an expected answer, `side_effect` only to the ones that declare a check
+(none do while the toolset carries nothing that changes the machine).
 Braintrust handles that natively: a score that is not in the list is not
 averaged, which is exactly the `n/a` the Go scorecard prints.
 
