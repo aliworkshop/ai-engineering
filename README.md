@@ -1,12 +1,15 @@
 # English teacher (Go) — terminal or browser, on a real harness
 
-> **Branch `session-5`.** Each session of the course is a branch, with the agent
-> at the repo root — `git switch session-5` then `go run .`. This is the newest:
-> it takes the tools that changed the machine back out, leaving the harness and a
-> small read-only toolset. `session-4` is the same harness with the file, shell
-> and diagram tools still in it; `session-3` is the agent without the harness;
-> `session-2` adds the built-in diagram renderers; `session-1` has no tools at
-> all.
+> **Branch `session-6`.** Each session of the course is a branch, with the agent
+> at the repo root — `git switch session-6` then `go run .`. This is the newest:
+> it makes the harness *visible* — the browser front-end becomes an inspector
+> over the live event stream, with resume, reset and a crash switch — and adds
+> two ways to check the durability claim rather than believe it: `-audit` over
+> the event log, and the same agent run on DBOS Transact for comparison.
+> `session-5` is the English teacher on the plain harness; `session-4` is the
+> same harness with file, shell and diagram tools; `session-3` is the agent
+> without the harness; `session-2` adds the diagram renderers; `session-1` has
+> no tools at all.
 
 An **English teacher** you talk to in a loop, **in the terminal or in a
 browser**. Paste it a paragraph and it comes back corrected, with a line per
@@ -41,9 +44,12 @@ Model access goes through the [OpenRouter Go SDK](https://github.com/OpenRouterT
 # needs OPENROUTER_API_KEY in .env
 
 go run .                 # terminal: paste text or ask a question, 'exit' to quit
-go run . -http :8080     # browser: open http://localhost:8080
+go run . -http :8080     # browser: chat on the left, the harness on the right
 go run . -ask "..."      # one turn, prints only the answer (what the evals drive)
 go run . -v              # ...with the full harness event stream
+
+# proving the harness does what it says
+go run . -audit          # read the event log back: did any work happen twice?
 
 # the harness's own commands
 go run . -list           # workflows, and which are waiting on you
@@ -461,6 +467,7 @@ Two details that are easy to get wrong and worth stating:
 | 5 | Run code in a sandbox | `RunCode` + the tool bridge — `tools/code.go`, `sandbox/` |
 | 6 | Human-in-the-loop before danger | the `Approver` port every sensitive tool takes — `tools/tools.go`, `ui/console.go`, `web/session.go`; made durable by `approval/` |
 | 7 | Eval suite | `tools/*_test.go` + `agent/eval*_test.go` + `evalscore/` (relevancy) + `evals/` (Braintrust) |
+| 9 | Check that nothing ran twice | `events.Audit` + `go run . -audit` |
 
 ## Beyond the basics
 
@@ -539,6 +546,39 @@ One page, embedded in the binary with `go:embed` — no build step and no CDN.
 `web.Session` is to the browser what `ui.Console` is to the terminal: it is the
 approver the tools ask, and the hooks the agent reports progress to.
 
+- **The inspector.** Every harness event, live, on the right: glyphed and
+  coloured by kind, click any row for the full JSON — arguments, workflow id,
+  call id, timings. The session joins the event bus (`web.Session` implements
+  `events.Emitter`), so the browser sees the *same* stream the terminal renders
+  and the JSONL log stores, unfiltered. A UI that shows a redaction of the event
+  stream is a worse debugger than the terminal, which was the state of this page
+  before.
+- **The activity line names the step.** `calling search_knowledge…`,
+  `handing off: teacher → operator…`, `compacting older turns into a summary…`,
+  `replaying tool-call_x from the checkpoint…`. It is derived from the event
+  stream, so it can never drift from what is actually happening.
+- **Markdown replies.** The teacher answers in headings, bold corrections and
+  bullet lists; rendering that as raw asterisks threw away half of what it said.
+  Escaped first, decorated second — model output still cannot inject markup.
+- **A status pill**: idle · working · parked · recovering · crashed · failed.
+  Parked is the one worth seeing from across a room: nothing is happening, and
+  that is correct rather than broken.
+- **Resume, in the browser.** `POST /api/resume` runs the same recovery pass as
+  `go run . -resume <id>`, streaming the second half of the run. Until it
+  existed the runtime could park a workflow that only a terminal could revive —
+  which made the durable story something you had to take on faith at the exact
+  moment it pays off. The runs strip above the events lists what the harness is
+  holding, with what each parked one is waiting on.
+- **Crash mid-run**, the checkbox next to the composer. It cancels the turn once
+  the first tool completes, which is what a dying process looks like from a
+  workflow's side. Then press **Resume** and watch `step.cached` scroll past:
+  the completed steps replay, and are not paid for twice.
+- **Clear state** is `rm -rf .harness` as a button, and asks first — a parked
+  approval is a question waiting for a human, and clearing it means asking
+  again.
+
+And the parts that were already true:
+
 - **A turn is a stream.** `POST /api/chat` answers with server-sent events and
   stays open until the turn ends, so tool calls, compaction notices and approval
   requests appear *as they happen* rather than all at once at the end — the same
@@ -555,6 +595,30 @@ approver the tools ask, and the hooks the agent reports progress to.
   hours.
 - **New chat** rebuilds the session's agent with an empty history — the
   browser's version of quitting the CLI and starting it again.
+
+## Proving it: `-audit`
+
+```sh
+go run . -audit      # did any work happen twice?
+```
+
+The durability claim is easy to state and easy to get wrong, and the event log
+already holds the evidence. `-audit` reads `.harness/events.jsonl` back and
+counts:
+
+```
+  steps executed         6
+  steps replayed         4  (work a resumed run did not redo)
+  repeated steps         0  ✔ nothing ran twice
+```
+
+The measurement is `step.completed`, and that choice is the whole subtlety. A
+resumed run **re-requests** its tools — the agent emits `tool.requested`, then
+the step comes back from the checkpoint — so counting requests would report a
+duplicate every time recovery worked *perfectly*. A step only completes when it
+actually ran. (Events now carry the model's own `call` id for the same reason:
+a tool NAME repeats legitimately, a CALL repeating is a side effect that
+happened twice.)
 
 ## Tests
 
@@ -604,7 +668,11 @@ go test ./... -short     # fast, offline, deterministic (no key, no network)
 - **`events` package** — the JSONL log is append-only and every line parses with a
   timestamp, an unanswered request is distinguishable from a refusal, a panicking
   sink cannot take the others down with it, and a multi-line tool result still
-  renders as exactly one line.
+  renders as exactly one line. The audit is tested on the distinction it exists
+  to make: a replayed request is not a repeated side effect, the same step
+  completing twice is, two workflows are never conflated, and a half-written
+  line is counted rather than fatal — an audit that refuses to run because the
+  log is torn is useless exactly when it is needed.
 - **`agent` package** — the harness end to end against a scripted model over a
   local HTTP server, so the runtime is deterministic even though the model isn't:
   - *durability* (`harness_test.go`) — a crash after the irreversible action does

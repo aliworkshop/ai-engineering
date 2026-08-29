@@ -337,7 +337,8 @@ func (a *Agent) runTools(ctx context.Context, wf *durable.Workflow, calls []Tool
 	for _, call := range calls {
 		events.Emit(a.bus, events.Event{
 			Type: events.ToolRequested, Workflow: workflowIDOf(wf),
-			Agent: a.Current(), Name: call.Name, Args: compactArgs(call.Args),
+			Agent: a.Current(), Name: call.Name, Call: call.ID,
+			Args: compactArgs(call.Args),
 		})
 
 		// Tell the gate which call the approval it is about to be asked for
@@ -356,7 +357,8 @@ func (a *Agent) runTools(ctx context.Context, wf *durable.Workflow, calls []Tool
 
 		events.Emit(a.bus, events.Event{
 			Type: events.ToolCompleted, Workflow: workflowIDOf(wf),
-			Agent: a.Current(), Name: call.Name, Result: truncate(result, 70),
+			Agent: a.Current(), Name: call.Name, Call: call.ID,
+			Result: truncate(result, 70),
 		})
 		if a.OnToolCall != nil {
 			a.OnToolCall(call.Name, call.Args, result)

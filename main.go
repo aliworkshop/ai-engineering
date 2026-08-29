@@ -20,6 +20,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/joho/godotenv"
@@ -67,6 +68,7 @@ func main() {
 	resumeID := flag.String("resume", "", "resume a workflow that stopped early")
 	ask := flag.String("ask", "", "answer one question and exit, printing nothing but the answer")
 	list := flag.Bool("list", false, "list workflows and their status")
+	audit := flag.Bool("audit", false, "read the event log back and report whether any tool call ran twice")
 	verbose := flag.Bool("v", false, "print the full harness event stream, including every model turn and tool call")
 	flag.Parse()
 
@@ -75,6 +77,10 @@ func main() {
 
 	if *list {
 		exitOn(listWorkflows())
+		return
+	}
+	if *audit {
+		exitOn(auditLog())
 		return
 	}
 
@@ -315,6 +321,50 @@ func resume(client *openrouter.OpenRouter, workflowID string) error {
 		return err
 	}
 	fmt.Println("\nagent>", answer)
+	return nil
+}
+
+// auditLog answers the question the whole harness is built around: did a crash
+// ever cause a side effect to happen twice?
+//
+// The log already holds the answer — every tool.requested carries its workflow
+// and arguments — so this is a read, not an instrument. That is the quiet
+// dividend of Part 1: because everything is an event with a timestamp, the
+// durability claim is checkable with a hundred lines and no new machinery.
+func auditLog() error {
+	report, err := events.Audit(harnessPath("events.jsonl"))
+	if os.IsNotExist(err) {
+		fmt.Println("No event log yet — run the agent once.")
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("%s — %d events across %d workflows\n\n",
+		report.Path, report.Total, len(report.Workflows))
+
+	types := make([]string, 0, len(report.ByType))
+	for name := range report.ByType {
+		types = append(types, name)
+	}
+	sort.Strings(types)
+	for _, name := range types {
+		fmt.Printf("  %-22s %d\n", name, report.ByType[name])
+	}
+
+	fmt.Printf("\n  steps executed         %d\n", len(report.Executed))
+	fmt.Printf("  steps replayed         %d  (work a resumed run did not redo)\n", report.Replayed)
+	if report.Clean() {
+		fmt.Println("  repeated steps         0  ✔ nothing ran twice")
+		return nil
+	}
+
+	fmt.Printf("  repeated steps         %d  ✘ work was done more than once\n\n",
+		len(report.Duplicated))
+	for _, d := range report.Duplicated {
+		fmt.Printf("    %d×  %s  in %s\n", d.Count, d.Step, d.Workflow)
+	}
 	return nil
 }
 

@@ -74,8 +74,17 @@ type Event struct {
 	Type     Type   `json:"type"`
 	Workflow string `json:"workflow,omitempty"`
 
-	Agent  string `json:"agent,omitempty"`  // which agent/specialist acted
-	Name   string `json:"name,omitempty"`   // tool, step, or investigator name
+	Agent string `json:"agent,omitempty"` // which agent/specialist acted
+	Name  string `json:"name,omitempty"`  // tool, step, or investigator name
+
+	// Call is the model's own id for one tool call, and it is what makes the
+	// durability claim checkable. A tool name repeats legitimately — a model
+	// may ask for run_code four times in one run — so counting names proves
+	// nothing. The same CALL appearing twice is a side effect that happened
+	// twice, which is the bug the whole harness exists to prevent. See
+	// events.Audit.
+	Call string `json:"call,omitempty"`
+
 	Args   string `json:"args,omitempty"`   // the model's JSON arguments
 	Result string `json:"result,omitempty"` // what came back
 	Text   string `json:"text,omitempty"`   // free-form: a summary, a plan, an objective
