@@ -50,6 +50,7 @@ go run . -v              # ...with the full harness event stream
 
 # proving the harness does what it says
 go run . -audit          # read the event log back: did any work happen twice?
+go run . -brittle        # the same agent with NO durable store, for contrast
 
 # the harness's own commands
 go run . -list           # workflows, and which are waiting on you
@@ -596,10 +597,11 @@ And the parts that were already true:
 - **New chat** rebuilds the session's agent with an empty history — the
   browser's version of quitting the CLI and starting it again.
 
-## Proving it: `-audit`
+## Proving it: `-audit` and `-brittle`
 
 ```sh
 go run . -audit      # did any work happen twice?
+go run . -brittle    # the same agent with no durable store, for contrast
 ```
 
 The durability claim is easy to state and easy to get wrong, and the event log
@@ -619,6 +621,11 @@ duplicate every time recovery worked *perfectly*. A step only completes when it
 actually ran. (Events now carry the model's own `call` id for the same reason:
 a tool NAME repeats legitimately, a CALL repeating is a side effect that
 happened twice.)
+
+`-brittle` is the other half of the argument: the same agent, the same tools,
+the same crash — with `WithStore` left off. Nothing is checkpointed, `-list`
+shows no workflows, and a re-run starts from zero and does everything again.
+One line of wiring separates it from the harness, which is the point.
 
 ## Tests
 

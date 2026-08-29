@@ -69,6 +69,7 @@ func main() {
 	ask := flag.String("ask", "", "answer one question and exit, printing nothing but the answer")
 	list := flag.Bool("list", false, "list workflows and their status")
 	audit := flag.Bool("audit", false, "read the event log back and report whether any tool call ran twice")
+	brittle := flag.Bool("brittle", false, "run WITHOUT the durable store — the pre-harness agent, for comparison")
 	verbose := flag.Bool("v", false, "print the full harness event stream, including every model turn and tool call")
 	flag.Parse()
 
@@ -83,6 +84,7 @@ func main() {
 		exitOn(auditLog())
 		return
 	}
+	brittleMode = *brittle
 
 	apiKey := os.Getenv("OPENROUTER_API_KEY")
 	if apiKey == "" {
@@ -174,9 +176,15 @@ func harness(client *openrouter.OpenRouter, approver *approverOf, emitter events
 
 	assistant := agent.New(client, Model, registry).
 		WithRoster(roster, agent.TeacherName).
-		WithStore(store).
 		WithGate(gate).
 		WithEvents(emitter)
+
+	// The one line that separates a harness from a loop. Without a store the
+	// agent still answers, still routes, still gates — and forgets every step
+	// the instant the process stops.
+	if !brittleMode {
+		assistant = assistant.WithStore(store)
+	}
 
 	describeRoster(roster)
 	return assistant, store, nil
@@ -210,6 +218,14 @@ func describeRoster(roster agent.Roster) {
 // call that parsed it. A package-level bool is the least ceremony that works
 // and the flag is read-only after main sets it.
 var verboseWiring bool
+
+// brittleMode mirrors -brittle: build the agent WITHOUT a durable store.
+//
+// It exists to be run once, and then never again. Part 2's claim only means
+// something if you have watched the other version fail — same agent, same
+// tools, same crash, except that nothing was checkpointed, so the run restarts
+// from zero and every side effect happens a second time. `-audit` counts them.
+var brittleMode bool
 
 // approverOf carries the interactive human, if there is one. It exists so
 // harness can take "maybe a human" without the nil-interface trap: a nil
