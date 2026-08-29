@@ -104,6 +104,52 @@ confident citation of `commas-and-punctuation` for a question about *who* vs
 **When a rule is missing, the fix is the corpus, not the code.** That who/whom
 answer is what `corpus/pronouns.md` exists for. Add a file, re-run the evals.
 
+## Answer relevancy: deepeval's metric, in Go (`internal/evalscore`)
+
+```sh
+go test ./internal/agent -run TestEvalAgentBehavior -v   # scorecard + a reason per case
+cd evals && go test -run TestBehaviorEval -v             # the same score, into Braintrust
+```
+
+```
+[PASS] relevancy 1.00 — tools used: [search_knowledge]
+[PASS] relevancy 0.75 — tools used: []
+SCORECARD: 5/5 scenarios passed, mean relevancy 0.95
+```
+
+`AnswerRelevancyMetric` asks one question: **is the reply about what was
+asked?** It splits the answer into statements and judges each one against the
+input; the score is the fraction that address it. So it does *not* check that
+the grammar advice is correct — an agent that teaches a wrong rule fluently and
+on topic scores 1.00. What it catches is padding: the neighbouring rule nobody
+asked about, the correction that drifts into a style rewrite. That is why the
+teacher's prompt says *answer the question that was asked, then stop* — this
+score is what that sentence is accountable to.
+
+**Why it is written here rather than imported.** deepeval is Python and has no
+Go SDK; Confident AI's Go story is OpenTelemetry tracing into their platform,
+not the metrics. But the metric is a recipe, not a library trick, and a short
+one: statements → per-statement verdicts → relevant ÷ total → one call for the
+reason. Four model calls, ~200 lines, and the whole repo stays `go test ./...`
+with no virtualenv.
+
+The port scored the same mean (0.95) as the Python original on the same
+answers — but its judging prompts are ours, not deepeval's internals, so
+individual scores land close rather than identical. Treat the series as the
+signal, which is true of any LLM judge.
+
+Two details that cost real debugging:
+
+- **The rubric has to be explicit about what counts.** A first version scored a
+  perfectly good correction 0.60, because the judge read example sentences and
+  per-change bullets as "not directly answering". The prompt now names them —
+  corrected text, one item in a list of corrections, a supporting example, the
+  rule's name, the citation — as relevant.
+- **Verdicts carry the statement's number.** Asked for five verdicts a model
+  will occasionally return four, or six; matching by position then scores the
+  wrong statements silently. With indices a miscount is detectable, worth one
+  retry, and an error rather than a bogus zero if it happens twice.
+
 ## Architecture
 
 Dependencies point inward. A UI knows the agent; the agent knows an abstract
@@ -532,6 +578,9 @@ go test ./... -short     # fast, offline, deterministic (no key, no network)
   accumulate across runs instead of scrolling away. Separate module on purpose:
   the SDK pulls ~60 dependencies and the agent keeps its two. See
   [`evals/README.md`](evals/README.md).
+- **`evalscore` package** — deepeval's `AnswerRelevancyMetric`, ported to Go and
+  run by both eval front-ends, so the Go scorecard and the Braintrust dashboard
+  can never disagree about the same answer. See **Answer relevancy** above.
 - **`agent` package, live evals** (skipped with `-short` or without a key):
   - *behavioral* (`eval_test.go`) — whole tasks through the real model, graded
     on which tools it chose, its answer, and — for a task whose answer it could
