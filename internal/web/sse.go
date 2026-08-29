@@ -16,21 +16,20 @@ var indexHTML []byte
 
 // event is one thing that happened during a turn. The page switches on Type:
 //
-//	tool      a tool ran           — Name, Args, Result, Diagram
+//	tool      a tool ran           — Name, Args, Result
 //	compact   history was folded   — Text (the summary)
 //	approval  a tool needs a y/n   — ID, Action
 //	answer    the turn is done     — Text
 //	suspended nobody answered; the run is parked on disk — ID, Text
 //	error     the turn failed      — Text
 type event struct {
-	Type    string `json:"type"`
-	Name    string `json:"name,omitempty"`
-	Args    string `json:"args,omitempty"`
-	Result  string `json:"result,omitempty"`
-	ID      string `json:"id,omitempty"`
-	Action  string `json:"action,omitempty"`
-	Text    string `json:"text,omitempty"`
-	Diagram bool   `json:"diagram,omitempty"`
+	Type   string `json:"type"`
+	Name   string `json:"name,omitempty"`
+	Args   string `json:"args,omitempty"`
+	Result string `json:"result,omitempty"`
+	ID     string `json:"id,omitempty"`
+	Action string `json:"action,omitempty"`
+	Text   string `json:"text,omitempty"`
 }
 
 // sseWriter writes server-sent events to a response that stays open for the

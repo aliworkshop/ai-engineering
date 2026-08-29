@@ -6,25 +6,24 @@ away.
 
 ```sh
 cd evals
-go test -v                              # all three suites
+go test -v                              # both suites
 go test -run TestToolSelectionEval -v   # the cheap one (8 model calls, ~4s)
 ```
 
 Needs `OPENROUTER_API_KEY` and `BRAINTRUST_API_KEY` in `../.env`. Missing either
 one skips rather than fails, with a message naming which.
 
-## The three suites
+## The two suites
 
 | Suite | Cases | Scores | Notes |
 |---|---|---|---|
 | `tool-selection` | 8 | `correct_tool`, `correct_args` | One model call each, nothing executes. Cheapest signal, most sensitive to prompt edits. |
 | `behavior` | 5 | `tool_choice`, `answer_match`, `side_effect` | Whole tasks through the real loop, graded on what landed on disk. |
-| `diagram` | 6 | `schema`, `structure`, `preservation`, `keywords` | Four dimensions per case; the suite that most wants a dashboard. |
 
-Scores abstain individually — `structure` applies only to create cases,
-`preservation` only to modify cases. Braintrust handles that natively: a score
-that is not in the list is not averaged, which is exactly the `n/a` the Go
-scorecard prints.
+Scores abstain individually — `answer_match` applies only to the cases that
+name an expected answer, `side_effect` only to the ones that change the disk.
+Braintrust handles that natively: a score that is not in the list is not
+averaged, which is exactly the `n/a` the Go scorecard prints.
 
 ## Why this is a separate module
 
@@ -45,14 +44,13 @@ in the parent, bump it here too.
 ## Relationship to the Go eval tests
 
 Additive, not a replacement. `internal/agent/eval*_test.go` still run offline
-with `-short` and still print their scorecards. Same datasets, same scorers —
-the diagram scoring is *literally the same code*, imported from
-`internal/evalscore`, so the two can never disagree about the same run.
+with `-short` and still print their scorecards. Same datasets, same scorers, so
+the two can never disagree about the same run.
 
 What Braintrust adds is history: which case flipped, when, and against which
-model. The diagram eval is stochastic — it has scored anywhere from 4/6 to 6/6
-on an unchanged agent — and telling variance from regression by re-running a
-git worktree four times is not a process.
+model. These evals are stochastic — the same unchanged agent does not score the
+same twice — and telling variance from regression by re-running a git worktree
+four times is not a process.
 
 ## Reading the results from the CLI
 
@@ -68,10 +66,8 @@ scores at all, which looks exactly like a broken integration and isn't.
 
 ## Gotchas worth knowing
 
-- **The diagram suite runs serially and must.** The diagram tools write to the
-  working directory, so each case `chdir`s into a temp dir — and the working
-  directory belongs to the process, not the goroutine. `Parallelism: 1`.
-- **The behavior suite runs serially too**, because its cases share a directory
-  and the denial case asserts that a file does *not* exist.
+- **The behavior suite runs serially and must**, because its cases share a
+  directory and the denial case asserts that a file does *not* exist.
+  `Parallelism: 1`.
 - **Flush before exit.** `tp.Shutdown` is what sends the spans. Without it a
   fast test exits before the exporter drains and the experiment shows up empty.

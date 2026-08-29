@@ -34,8 +34,6 @@
   }
 
   * { box-sizing: border-box; }
-  /* The panel and the button below set display:, which would otherwise win
-     against the browser's own rule for [hidden] and show them anyway. */
   [hidden] { display: none !important; }
   body {
     margin: 0;
@@ -59,11 +57,7 @@
   header.top .spacer { flex: 1; }
   #status { color: var(--muted); font-size: 13px; }
 
-  /* Scoped to the page's own chrome. A blanket `button {}` rule here also
-     restyles every button inside the embedded diagram editor, which brings its
-     own — and a rewritten Excalidraw toolbar is unusable. :where() keeps the
-     specificity exactly what a bare `button` selector had. */
-  :where(header.top, aside#canvas > header, form#composer, .approval) button {
+  button {
     font: inherit;
     padding: 6px 12px;
     border: 1px solid var(--line);
@@ -72,9 +66,9 @@
     color: var(--text);
     cursor: pointer;
   }
-  :where(header.top, aside#canvas > header, form#composer, .approval) button:hover:not(:disabled) { border-color: var(--accent); }
-  :where(header.top, aside#canvas > header, form#composer, .approval) button:disabled { opacity: .5; cursor: default; }
-  :where(header.top, aside#canvas > header, form#composer, .approval) button.primary {
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .5; cursor: default; }
+  button.primary {
     background: var(--accent);
     border-color: var(--accent);
     color: #fff;
@@ -143,40 +137,6 @@
     max-height: 200px;
   }
   #input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
-
-  aside#canvas {
-    width: 42%;
-    min-width: 280px;
-    border-left: 1px solid var(--line);
-    background: var(--panel);
-    display: flex;
-    flex-direction: column;
-  }
-  aside#canvas header {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 8px 12px;
-    border-bottom: 1px solid var(--line);
-    font-size: 13px;
-    color: var(--muted);
-  }
-  aside#canvas header .spacer { flex: 1; }
-  aside#canvas header #canvasNote { color: var(--muted); }
-  #canvasImg { flex: 1; min-height: 0; object-fit: contain; padding: 12px; }
-
-  /* Excalidraw fills whatever box it is given and measures it to place its own
-     UI, so the host needs a real size — height included — before it mounts. */
-  #editor { flex: 1; min-height: 0; position: relative; }
-  #editor .excalidraw { width: 100%; height: 100%; }
-  /* Editing wants the room; reading the chat can wait. */
-  aside#canvas.editing { width: 65%; }
-
-  @media (max-width: 760px) {
-    main { flex-direction: column; }
-    aside#canvas, aside#canvas.editing { width: auto; height: 45%; border-left: none; border-top: 1px solid var(--line); }
-    aside#canvas.editing { height: 70%; }
-  }
 </style>
 </head>
 <body>
@@ -184,7 +144,6 @@
     <h1>AI agent</h1>
     <span id="status"></span>
     <span class="spacer"></span>
-    <button id="showCanvas" hidden>Show diagram</button>
     <button id="reset">New chat</button>
   </header>
 
@@ -198,21 +157,6 @@
         </div>
       </form>
     </section>
-
-    <aside id="canvas" hidden>
-      <header>
-        <span id="canvasName">canvas.svg</span>
-        <span id="canvasNote"></span>
-        <span class="spacer"></span>
-        <button id="save" class="primary" hidden>Save</button>
-        <button id="reload" hidden>Reload</button>
-        <button id="edit" hidden>Edit</button>
-        <button id="picture" hidden>Picture</button>
-        <button id="hideCanvas">Hide</button>
-      </header>
-      <img id="canvasImg" alt="the diagram the agent drew">
-      <div id="editor" hidden></div>
-    </aside>
   </main>
 
 <script>
@@ -223,17 +167,6 @@ const scroller = document.getElementById("log");
 const input = document.getElementById("input");
 const sendBtn = document.getElementById("send");
 const status = document.getElementById("status");
-const canvasPanel = document.getElementById("canvas");
-const canvasImg = document.getElementById("canvasImg");
-const showCanvasBtn = document.getElementById("showCanvas");
-const canvasName = document.getElementById("canvasName");
-const canvasNote = document.getElementById("canvasNote");
-const editBtn = document.getElementById("edit");
-const saveBtn = document.getElementById("save");
-const reloadBtn = document.getElementById("reload");
-const pictureBtn = document.getElementById("picture");
-const editorHost = document.getElementById("editor");
-
 let busy = false;
 
 // Every node is built with textContent, never innerHTML: the text on this page
@@ -306,27 +239,9 @@ function approval(ev) {
   no.onclick = () => decide(false);
 }
 
-// showCanvas opens the diagram panel on the live canvas — the drawing as
-// something you can drag boxes around in, not a picture of it. The exported
-// picture is what you get only when there is no editor to be had.
-function showCanvas() {
-  canvasPanel.hidden = false;
-  showCanvasBtn.hidden = true;
-  if (editorAvailable && !editor) {
-    openEditor();
-    return;
-  }
-  // The file is overwritten in place, so the URL alone would be served from
-  // cache; the timestamp makes each redraw a new request.
-  if (!editor) canvasImg.src = "/canvas.svg?t=" + Date.now();
-}
-
 function handle(ev) {
   switch (ev.type) {
-    case "tool":
-      toolCall(ev);
-      if (ev.diagram) agentRedrew();
-      break;
+    case "tool": toolCall(ev); break;
     case "approval": approval(ev); break;
     case "compact": notice("history compacted — " + oneLine(ev.text, 120)); break;
     case "answer": message("agent", ev.text); break;
@@ -416,193 +331,7 @@ document.getElementById("reset").onclick = async () => {
   notice("new conversation — the agent has forgotten everything above");
 };
 
-document.getElementById("hideCanvas").onclick = () => {
-  // The editor stays mounted while the panel is away, so hiding it mid-drawing
-  // isn't a way to lose work.
-  canvasPanel.hidden = true;
-  showCanvasBtn.hidden = false;
-};
-showCanvasBtn.onclick = showCanvas;
-
-// The diagram, live.
-//
-// The agent writes its drawings twice: canvas.svg, a picture, and
-// canvas.excalidraw beside it, the same drawing in the format Excalidraw edits.
-// The panel shows the second one — the real Excalidraw canvas, where a box the
-// model put in the wrong place is dragged rather than re-prompted. Saving
-// writes both files back. The picture is still one click away, and is all
-// there is when the editor hasn't been built.
-let editor = null;          // the mounted canvas, while it is live
-let editorBundle = null;    // the app itself, fetched once, on first use
-let editorAvailable = false; // whether the server has a built bundle to give
-
-function canvasStatus(text) {
-  canvasNote.textContent = text ? "— " + text : "";
-}
-
-// The bundle is Excalidraw entire, several megabytes of it, so it is fetched
-// the first time a diagram is shown rather than on every page load — most
-// visits never draw one.
-function loadEditorBundle() {
-  if (editorBundle) return editorBundle;
-  editorBundle = new Promise((resolve, reject) => {
-    // Read by Excalidraw as it loads, to find its hand-drawn fonts. The server
-    // serves them from the installed package, so this works offline.
-    window.EXCALIDRAW_ASSET_PATH = "/editor/assets/";
-
-    const css = document.createElement("link");
-    css.rel = "stylesheet";
-    css.href = "/editor/editor-bundle.css";
-    document.head.appendChild(css);
-
-    const js = document.createElement("script");
-    js.src = "/editor/editor-bundle.js";
-    js.onload = () => resolve(window.AgentExcalidraw);
-    js.onerror = () => reject(new Error("the editor bundle would not load"));
-    document.head.appendChild(js);
-  });
-  return editorBundle;
-}
-
-function setEditing(on) {
-  canvasPanel.classList.toggle("editing", on);
-  canvasImg.hidden = on;
-  editorHost.hidden = !on;
-  canvasName.textContent = on ? "canvas.excalidraw" : "canvas.svg";
-  saveBtn.hidden = pictureBtn.hidden = !on;
-  editBtn.hidden = on || !editorAvailable;
-  if (on) reloadBtn.hidden = true; // shown only when the agent has redrawn
-}
-
-// openEditor mounts the live canvas on whatever is on disk. Opening takes a
-// moment — a bundle to fetch, a scene to read — and a second call in that
-// window would mount a second editor over the first, so it holds a flag rather
-// than relying on the button being out of reach.
-let opening = false;
-async function openEditor() {
-  if (opening || editor) return;
-  opening = true;
-  editBtn.disabled = true;
-  canvasStatus("loading the canvas…");
-  try {
-    const api = await loadEditorBundle();
-    editor = api.mount(editorHost, await fetchScene());
-    setEditing(true);
-    canvasStatus("");
-  } catch (err) {
-    // A failed load leaves nothing cached, so it can simply be tried again.
-    editorBundle = null;
-    canvasStatus("");
-    canvasImg.src = "/canvas.svg?t=" + Date.now();
-    message("error", "could not open the diagram canvas: " + err.message);
-  } finally {
-    opening = false;
-    editBtn.disabled = false;
-  }
-}
-
-// fetchScene reads the drawing the agent last wrote. No scene on disk is not an
-// error: the canvas opens empty and the first save creates the files.
-async function fetchScene() {
-  const res = await fetch("/canvas.excalidraw?t=" + Date.now());
-  return res.ok ? await res.json() : null;
-}
-
-// reloadEditor throws away what is on the canvas and mounts the file again.
-// Remounting rather than pushing the scene in keeps one code path for "open a
-// drawing", and Excalidraw restores initialData for us on the way in.
-async function reloadEditor() {
-  const scene = await fetchScene();
-  editor.unmount();
-  editor = (await loadEditorBundle()).mount(editorHost, scene);
-  reloadBtn.hidden = true;
-  canvasStatus("");
-}
-
-// agentRedrew runs when a tool has just rewritten the diagram files.
-//
-// The canvas is showing the drawing that was there a moment ago. An untouched
-// canvas is simply reloaded, so asking the agent to change the diagram updates
-// what you are looking at. A canvas with unsaved edits on it is left alone —
-// reloading would throw them away — and Reload appears for when you're ready.
-async function agentRedrew() {
-  canvasImg.src = "/canvas.svg?t=" + Date.now();
-  if (!editor) {
-    showCanvas();
-    return;
-  }
-  if (!(await editor.dirty())) {
-    await reloadEditor();
-    return;
-  }
-  reloadBtn.hidden = false;
-  canvasStatus("the agent redrew this — Save to keep yours, Reload to take theirs");
-}
-
-saveBtn.onclick = async () => {
-  saveBtn.disabled = true;
-  canvasStatus("saving…");
-  try {
-    // The scene is what gets edited next time; the SVG is what the page and
-    // anything else pointed at canvas.svg shows. Both come from Excalidraw.
-    const [scene, svg] = await Promise.all([editor.json(), editor.svg()]);
-    const res = await fetch("/api/canvas", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ scene: scene, svg: svg }),
-    });
-    if (!res.ok) {
-      canvasStatus((await res.text()).trim() || "the save failed");
-      return;
-    }
-    await editor.markSaved();
-    canvasImg.src = "/canvas.svg?t=" + Date.now();
-    canvasStatus("saved");
-  } catch (err) {
-    canvasStatus("the save failed: " + err.message);
-  } finally {
-    saveBtn.disabled = false;
-  }
-};
-
-reloadBtn.onclick = async () => {
-  if (!confirm("Load the agent's drawing? Changes you haven't saved will be lost.")) return;
-  await reloadEditor();
-};
-
-editBtn.onclick = showCanvas;
-
-// Picture is the way back to the flat canvas.svg — what the drawing looks like
-// to everything that isn't this page.
-pictureBtn.onclick = async () => {
-  if (await editor.dirty() &&
-      !confirm("Leave the canvas? Changes you haven't saved will be lost.")) {
-    return;
-  }
-  editor.unmount();
-  editor = null;
-  setEditing(false);
-  canvasStatus("");
-  canvasImg.src = "/canvas.svg?t=" + Date.now();
-};
-
-// A diagram drawn in an earlier run is still on disk, so offer it on load
-// instead of making the user ask for a redraw to see it.
-fetch("/canvas.svg", { method: "GET" }).then((res) => {
-  if (res.ok) { showCanvasBtn.hidden = false; }
-});
-
-// Whether the canvas is live depends on the built bundle being there — it comes
-// from `npm install` in excalidraw/, which is optional. Without it the panel is
-// what it always was: a picture that reloads.
-fetch("/editor/editor-bundle.js", { method: "HEAD" }).then((res) => {
-  editorAvailable = res.ok;
-  // A panel already open on the picture — shown before this probe came back —
-  // becomes live now rather than at the next redraw.
-  if (res.ok && !editor && !canvasPanel.hidden) showCanvas();
-});
-
-notice("Ask anything. Dangerous tools — writing files, running commands — stop here for your approval first.");
+notice("Ask anything. Dangerous tools — writing, editing, or deleting files — stop here for your approval first.");
 </script>
 </body>
 </html>

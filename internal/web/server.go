@@ -16,8 +16,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -51,25 +49,12 @@ const (
 	// maxMessageBytes caps one submitted question. The agent pays for every byte
 	// it forwards to the model, so a runaway paste is refused rather than billed.
 	maxMessageBytes = 64 << 10
-
-	// canvasFile is the diagram the tools draw. The page shows it next to the
-	// chat so a "draw me a flowchart" answer is visible without leaving the tab.
-	canvasFile = "canvas.svg"
 )
 
 // Server owns the sessions and the routes. The zero value is not usable; call
 // New.
 type Server struct {
 	newAssistant NewAssistant
-
-	// Dir is where the diagram tools write canvas.svg. Empty means the working
-	// directory, which is where the tools default to as well.
-	Dir string
-
-	// EditorDir is the excalidraw/ folder the diagram editor is served out of.
-	// Empty means there isn't one, and the page falls back to showing the
-	// drawing without offering to edit it. New fills it in.
-	EditorDir string
 
 	// mu guards sessions and every session's lastSeen field. Turns themselves
 	// are serialized per session by Session.turn, not here, so a long turn in
@@ -84,22 +69,17 @@ func New(newAssistant NewAssistant) *Server {
 	return &Server{
 		newAssistant: newAssistant,
 		sessions:     make(map[string]*Session),
-		EditorDir:    defaultEditorDir(),
 	}
 }
 
 // Handler returns the routes: the page itself, the chat stream, the approval
-// reply, a reset, the diagram the tools draw, and the editor that draws over it.
+// reply, and a reset.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", s.handleIndex)
 	mux.HandleFunc("POST /api/chat", s.handleChat)
 	mux.HandleFunc("POST /api/approve", s.handleApprove)
 	mux.HandleFunc("POST /api/reset", s.handleReset)
-	mux.HandleFunc("GET /"+canvasFile, s.handleCanvas)
-	mux.HandleFunc("GET /"+sceneFile, s.handleScene)
-	mux.HandleFunc("POST /api/canvas", s.handleSaveCanvas)
-	mux.Handle("GET /editor/", s.editorHandler())
 	return mux
 }
 
@@ -224,22 +204,6 @@ func (s *Server) handleReset(w http.ResponseWriter, r *http.Request) {
 
 	sess.assistant = s.newAssistant(sess)
 	w.WriteHeader(http.StatusNoContent)
-}
-
-// handleCanvas serves the diagram the tools draw, so the page can show it
-// instead of asking the user to open a file. The page displays it in an <img>,
-// where an SVG can't run script, so model-supplied labels reaching this file
-// stay inert. Nothing is cached: every redraw overwrites the same path.
-func (s *Server) handleCanvas(w http.ResponseWriter, r *http.Request) {
-	svg, err := os.ReadFile(filepath.Join(s.Dir, canvasFile))
-	if err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	w.Header().Set("Content-Type", "image/svg+xml")
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Content-Security-Policy", "script-src 'none'")
-	_, _ = w.Write(svg)
 }
 
 // session returns the conversation this browser owns, starting one — and

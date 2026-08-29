@@ -1,11 +1,9 @@
 // Package toolspec is the plumbing a tool needs to describe itself to the model
 // and to read back the arguments the model produced.
 //
-// It exists as its own package because tools now live in more than one place:
-// the tools package holds the general set, and tools/diagram holds the drawing
-// tools. Since tools imports tools/diagram to register them, tools/diagram
-// cannot import tools back — so the pieces both need sit here, in a leaf that
-// imports nothing of ours.
+// It exists as its own package so tools can live in more than one place: a
+// sub-package registered by the tools package cannot import tools back, so the
+// pieces both need sit here, in a leaf that imports nothing of ours.
 package toolspec
 
 import (

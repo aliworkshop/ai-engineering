@@ -51,10 +51,6 @@ var AssistantTools = []string{
 	"read_file",
 	"get_weather",
 	"openrouter_web_search",
-	"generate_diagram",
-	"add_elements",
-	"update_elements",
-	"remove_elements",
 	"run_code",
 	"investigate",
 	"handoff",
@@ -72,11 +68,10 @@ var OperatorTools = []string{
 	"run_code",
 }
 
-// InvestigatorTools is what a Part 6 sub-agent holds. Narrower than "everything
-// read-only": the diagram tools are read-only in the sense that matters to the
-// approval gate, but they redraw the canvas the user is looking at, and a
-// background investigation quietly repainting the screen is a surprise nobody
-// asked for. Investigators find things out; they do not draw.
+// InvestigatorTools is what a Part 6 sub-agent holds: the read-only tools it
+// needs to find things out, and nothing that changes the machine. An
+// investigation runs in the background, where a side effect nobody watched
+// happen is a surprise nobody asked for.
 var InvestigatorTools = []string{
 	"read_file",
 	"get_weather",
@@ -84,7 +79,7 @@ var InvestigatorTools = []string{
 	"run_code",
 }
 
-const AssistantPurpose = "general questions, research, reading files, diagrams, and sandboxed code"
+const AssistantPurpose = "general questions, research, reading files, and sandboxed code"
 
 const OperatorPurpose = "anything that changes the machine: writing, editing, or deleting files, and running shell commands"
 
@@ -110,18 +105,6 @@ Rules:
 - Use investigate when a request has several independent parts that each need
   their own digging. It researches them in parallel and reports back. Don't use
   it for a single question you can answer yourself.
-- To draw anything — a flowchart, a process, an architecture sketch — call
-  generate_diagram ONCE with every box and arrow in the elements array. Give
-  each box a short id and let arrows reference those ids. Never pass
-  coordinates, and never build a diagram out of a file write. Use shape
-  "ellipse" for start/end, "diamond" for a decision (label its arrows "yes"
-  and "no"), and the default "box" for a step. Then tell the user the path and
-  that refreshing the browser shows the new version.
-- To CHANGE a diagram you already drew, never call generate_diagram again —
-  edit it in place with add_elements, update_elements, or remove_elements.
-  Boxes go by their id; arrows by "from->to", e.g. "validate->create". Each
-  takes a list, so do the whole edit in ONE call rather than one call per
-  element. Removing a box does not remove its arrows — name those too.
 - You CANNOT write, edit, or delete files, and you cannot run shell commands.
   You do not have those tools. When a task needs one, call handoff with
   to="operator" and a one-sentence description of what must be done. Do not
@@ -170,18 +153,6 @@ Rules:
 - Don't make up facts. If you don't know, say so.
 - Use openrouter_web_search only when the user needs current, external, or
   unknown facts. It answers with source URLs — keep them in your reply.
-- To draw anything — a flowchart, a process, an architecture sketch — call
-  generate_diagram ONCE with every box and arrow in the elements array. Give
-  each box a short id and let arrows reference those ids. Never pass
-  coordinates, and never build a diagram out of write_file. Use shape
-  "ellipse" for start/end, "diamond" for a decision (label its arrows "yes"
-  and "no"), and the default "box" for a step. Then tell the user the path and
-  that refreshing the browser shows the new version.
-- To CHANGE a diagram you already drew, never call generate_diagram again —
-  edit it in place with add_elements, update_elements, or remove_elements.
-  Boxes go by their id; arrows by "from->to", e.g. "validate->create". Each
-  takes a list, so do the whole edit in ONE call rather than one call per
-  element. Removing a box does not remove its arrows — name those too.
 - To create and run a script: write_file, then run_command, then read_file to
   check the result.
 - To change an existing file: read_file first, then edit_file.

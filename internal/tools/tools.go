@@ -134,9 +134,9 @@ func (r *Registry) Dispatch(ctx context.Context, name, args string) string {
 }
 
 // defineTool and decode are the package-local spellings of the shared helpers.
-// They live in toolspec so the diagram tools — which sit in a sub-package this
-// one imports, and so can't import back — reach the same code instead of a
-// second copy of it.
+// They live in toolspec so a tool in a sub-package this one imports — and which
+// therefore can't import back — reaches the same code instead of a second copy
+// of it.
 func defineTool(name, description, schema string) components.ChatFunctionTool {
 	return toolspec.Define(name, description, schema)
 }

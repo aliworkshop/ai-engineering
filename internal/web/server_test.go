@@ -10,8 +10,6 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -147,7 +145,7 @@ func find(events []event, kind string) (event, bool) {
 // turn.
 func TestTurnStreamsToolCallsThenTheAnswer(t *testing.T) {
 	_, ts, client := newTestServer(t, func(s *Session, input string) (string, error) {
-		s.LogTool("read_file", `{"path":"notes.txt"}`, "hello")
+		s.LogTool("get_weather", `{"location":"Tokyo"}`, "18.2°C")
 		s.LogCompact("earlier turns, folded")
 		return "you said: " + input, nil
 	})
@@ -158,7 +156,7 @@ func TestTurnStreamsToolCallsThenTheAnswer(t *testing.T) {
 	if !ok {
 		t.Fatalf("no tool event in %+v", events)
 	}
-	if tool.Name != "read_file" || tool.Result != "hello" {
+	if tool.Name != "get_weather" || tool.Result != "18.2°C" {
 		t.Fatalf("tool event lost detail: %+v", tool)
 	}
 	if _, ok := find(events, "compact"); !ok {
@@ -173,28 +171,6 @@ func TestTurnStreamsToolCallsThenTheAnswer(t *testing.T) {
 	}
 	if last := events[len(events)-1]; last.Type != "answer" {
 		t.Fatalf("the answer should end the turn, got %q last", last.Type)
-	}
-}
-
-// A tool that redraws the canvas has to say so, or the page keeps showing the
-// previous drawing.
-func TestDiagramToolsFlagTheirEvents(t *testing.T) {
-	_, ts, client := newTestServer(t, func(s *Session, _ string) (string, error) {
-		s.LogTool("read_file", `{"path":"x"}`, "contents")
-		s.LogTool("update_elements", `{"elements":[]}`, "Updated 1 box.")
-		return "ok", nil
-	})
-
-	events := ask(t, ts, client, "change the diagram", nil)
-
-	for _, e := range events {
-		if e.Type != "tool" {
-			continue
-		}
-		want := e.Name == "update_elements"
-		if e.Diagram != want {
-			t.Fatalf("%s: diagram flag %v, want %v", e.Name, e.Diagram, want)
-		}
 	}
 }
 
@@ -359,45 +335,6 @@ func TestFollowUpReachesTheSameConversation(t *testing.T) {
 
 	if a, b := <-seen, <-seen; a != b {
 		t.Fatal("the follow-up started a new conversation")
-	}
-}
-
-// The page shows the drawing next to the chat, so the server has to hand over
-// the file the diagram tools write.
-func TestCanvasIsServedFromTheToolsDirectory(t *testing.T) {
-	dir := t.TempDir()
-	srv := New(func(s *Session) Assistant {
-		return scripted{session: s, ask: func(*Session, string) (string, error) { return "", nil }}
-	})
-	srv.Dir = dir
-	ts := httptest.NewServer(srv.Handler())
-	defer ts.Close()
-
-	res, err := http.Get(ts.URL + "/canvas.svg")
-	if err != nil {
-		t.Fatalf("GET canvas: %v", err)
-	}
-	res.Body.Close()
-	if res.StatusCode != http.StatusNotFound {
-		t.Fatalf("with nothing drawn yet: got %d, want 404", res.StatusCode)
-	}
-
-	const svg = `<svg xmlns="http://www.w3.org/2000/svg"></svg>`
-	if err := os.WriteFile(filepath.Join(dir, "canvas.svg"), []byte(svg), 0o644); err != nil {
-		t.Fatalf("write canvas: %v", err)
-	}
-
-	res, err = http.Get(ts.URL + "/canvas.svg")
-	if err != nil {
-		t.Fatalf("GET canvas: %v", err)
-	}
-	defer res.Body.Close()
-	body, _ := io.ReadAll(res.Body)
-	if res.StatusCode != http.StatusOK || string(body) != svg {
-		t.Fatalf("got %d %q, want the drawing back", res.StatusCode, body)
-	}
-	if got := res.Header.Get("Content-Type"); got != "image/svg+xml" {
-		t.Fatalf("content type %q, want image/svg+xml", got)
 	}
 }
 

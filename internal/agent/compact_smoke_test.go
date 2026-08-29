@@ -35,8 +35,8 @@ func TestCompactionCapsContext(t *testing.T) {
 	}
 
 	ag := New(llm.NewOpenRouter(key), evalModel, tools.Default(approve(false)))
-	ag.Memory().MaxContextTokens = 320
-	ag.Memory().KeepContextTokens = 200
+	ag.Memory().MaxContextTokens = 230
+	ag.Memory().KeepContextTokens = 215
 
 	var compacted bool
 	ag.OnCompact = func(string) { compacted = true }

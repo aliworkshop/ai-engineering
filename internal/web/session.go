@@ -154,25 +154,13 @@ func (s *Session) resolve(id string, approved bool) bool {
 // as it goes, so a long turn shows its work instead of sitting silent.
 func (s *Session) LogTool(name, args, result string) {
 	_ = s.emit(event{
-		Type:    "tool",
-		Name:    name,
-		Args:    args,
-		Result:  result,
-		Diagram: redrawsCanvas(name),
+		Type:   "tool",
+		Name:   name,
+		Args:   args,
+		Result: result,
 	})
 }
 
 func (s *Session) LogCompact(summary string) {
 	_ = s.emit(event{Type: "compact", Text: summary})
-}
-
-// redrawsCanvas reports whether a tool rewrites canvas.svg, which tells the
-// page to reload the image it is showing. Naming the tools here — rather than
-// having the page guess from the result text — keeps the trigger exact.
-func redrawsCanvas(tool string) bool {
-	switch tool {
-	case "generate_diagram", "add_elements", "update_elements", "remove_elements":
-		return true
-	}
-	return false
 }

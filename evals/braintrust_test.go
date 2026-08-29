@@ -21,8 +21,7 @@
 // # What it does not replace
 //
 // The Go eval tests in internal/agent stay exactly as they are, and still run
-// offline with -short. These are additive: same datasets, same scorers — the
-// diagram scoring is literally the same code, imported from internal/evalscore —
+// offline with -short. These are additive: same datasets, same scorers,
 // reported somewhere they accumulate.
 //
 // Run:  cd evals && go test -v
