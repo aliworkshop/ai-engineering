@@ -28,7 +28,7 @@ func newTestConsole(input string) (*Console, *syncBuf) {
 // animation frame lands on top of the text.
 func TestToolLogClearsSpinnerFirst(t *testing.T) {
 	c, buf := newTestConsole("")
-	c.logToolCall("read_file", `{"path":"x"}`, "contents")
+	c.logToolCall("get_weather", `{"location":"Tokyo"}`, "18.2°C, wind 9 km/h")
 	c.spin.Stop()
 
 	out := buf.String()

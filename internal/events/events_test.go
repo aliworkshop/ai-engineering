@@ -19,7 +19,7 @@ func TestJSONLIsAppendOnlyAndParsable(t *testing.T) {
 
 	approved := true
 	Emit(log, Event{Type: WorkflowStarted, Workflow: "abc", Text: "delete the file"})
-	Emit(log, Event{Type: ToolCompleted, Workflow: "abc", Name: "read_file", Millis: 12})
+	Emit(log, Event{Type: ToolCompleted, Workflow: "abc", Name: "get_weather", Millis: 12})
 	Emit(log, Event{Type: ApprovalResolved, Workflow: "abc", Approved: &approved})
 
 	raw, err := os.ReadFile(path)
@@ -97,7 +97,7 @@ func TestABrokenSinkCannotTakeDownTheOthers(t *testing.T) {
 // TestNilEmitterIsLegal keeps the harness usable from a unit test that has no
 // interest in events.
 func TestNilEmitterIsLegal(t *testing.T) {
-	got := Emit(nil, Event{Type: ToolRequested, Name: "read_file"})
+	got := Emit(nil, Event{Type: ToolRequested, Name: "get_weather"})
 	if got.TS == "" {
 		t.Fatalf("the event should still be stamped and returned")
 	}
@@ -111,13 +111,13 @@ func TestQuietConsoleKeepsStateChanges(t *testing.T) {
 	console := NewConsole(&buf)
 	console.Quiet = true
 
-	Emit(console, Event{Type: ToolRequested, Name: "read_file"})
+	Emit(console, Event{Type: ToolRequested, Name: "get_weather"})
 	Emit(console, Event{Type: ModelCompleted})
 	Emit(console, Event{Type: ApprovalRequested, Workflow: "abc", Text: "DELETE prod.db"})
 	Emit(console, Event{Type: AgentHandoff, From: "assistant", To: "operator"})
 
 	out := buf.String()
-	if strings.Contains(out, "read_file") || strings.Contains(out, "model.completed") {
+	if strings.Contains(out, "get_weather") || strings.Contains(out, "model.completed") {
 		t.Fatalf("quiet mode should drop routine per-step chatter:\n%s", out)
 	}
 	for _, want := range []string{"approval.requested", "DELETE prod.db", "agent.handoff", "operator"} {
@@ -133,7 +133,7 @@ func TestConsoleKeepsOneLinePerEvent(t *testing.T) {
 	var buf bytes.Buffer
 	console := NewConsole(&buf)
 
-	Emit(console, Event{Type: ToolCompleted, Name: "run_command", Result: "line one\nline two\nline three"})
+	Emit(console, Event{Type: ToolCompleted, Name: "get_weather", Result: "line one\nline two\nline three"})
 
 	if n := strings.Count(strings.TrimRight(buf.String(), "\n"), "\n"); n != 0 {
 		t.Fatalf("expected exactly one line, got %d extra:\n%s", n, buf.String())

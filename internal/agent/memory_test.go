@@ -53,7 +53,7 @@ func TestCompactionCutsOnTurnBoundaries(t *testing.T) {
 	for i := 0; i < 6; i++ {
 		mem.Commit([]Msg{
 			{Role: "user", Text: strings.Repeat("question ", 5)},
-			{Role: "assistant", ToolCalls: []ToolCall{{ID: "call_x", Name: "read_file", Args: `{"path":"a"}`}}},
+			{Role: "assistant", ToolCalls: []ToolCall{{ID: "call_x", Name: "get_weather", Args: `{"location":"Oslo"}`}}},
 			{Role: "tool", Text: strings.Repeat("result ", 5), ToolCallID: "call_x"},
 			{Role: "assistant", Text: "done"},
 		})
@@ -130,16 +130,16 @@ func TestSingleTurnIsNeverCompacted(t *testing.T) {
 
 // TestTranscriptKeepsToolWork checks that what goes to the summarizer includes
 // the tool calls and results — a summary that drops them is how an agent
-// forgets the file it just wrote.
+// forgets the number it just computed.
 func TestTranscriptKeepsToolWork(t *testing.T) {
 	text := Transcript([]Turn{{Msgs: []Msg{
-		{Role: "user", Text: "write the config"},
-		{Role: "assistant", ToolCalls: []ToolCall{{Name: "write_file", Args: `{"path":"cfg.json"}`}}},
-		{Role: "tool", Text: "Wrote cfg.json"},
+		{Role: "user", Text: "sum the primes below 1000"},
+		{Role: "assistant", ToolCalls: []ToolCall{{Name: "run_code", Args: `{"language":"python"}`}}},
+		{Role: "tool", Text: "76127"},
 		{Role: "assistant", Text: "done"},
 	}}})
 
-	for _, want := range []string{"write the config", "write_file", "cfg.json", "Wrote cfg.json", "done"} {
+	for _, want := range []string{"sum the primes", "run_code", "python", "76127", "done"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("transcript dropped %q:\n%s", want, text)
 		}
@@ -154,9 +154,9 @@ func TestSDKRoundTripPreservesToolCallIDs(t *testing.T) {
 		{Role: "system", Text: "sys"},
 		{Role: "user", Text: "hi"},
 		{Role: "assistant", Text: "one moment", ToolCalls: []ToolCall{
-			{ID: "call_9", Name: "read_file", Args: `{"path":"x"}`},
+			{ID: "call_9", Name: "get_weather", Args: `{"location":"Tokyo"}`},
 		}},
-		{Role: "tool", Text: "contents", ToolCallID: "call_9"},
+		{Role: "tool", Text: "18.2°C", ToolCallID: "call_9"},
 	}
 
 	sdk := toSDK(msgs)
@@ -168,7 +168,7 @@ func TestSDKRoundTripPreservesToolCallIDs(t *testing.T) {
 	if assistant == nil || len(assistant.ToolCalls) != 1 {
 		t.Fatalf("assistant tool calls did not survive: %+v", sdk[2])
 	}
-	if assistant.ToolCalls[0].ID != "call_9" || assistant.ToolCalls[0].Function.Name != "read_file" {
+	if assistant.ToolCalls[0].ID != "call_9" || assistant.ToolCalls[0].Function.Name != "get_weather" {
 		t.Fatalf("tool call mangled: %+v", assistant.ToolCalls[0])
 	}
 	if assistantText(*assistant) != "one moment" {
@@ -199,11 +199,11 @@ func TestDecodeHandoff(t *testing.T) {
 
 // TestEstimateTokensGrowsWithContent is a sanity check on the budget's only
 // input — an estimator that ignored tool arguments would never see a prompt
-// balloon from a big write_file call.
+// balloon from a big run_code call.
 func TestEstimateTokensGrowsWithContent(t *testing.T) {
 	small := EstimateTokens([]Msg{{Role: "user", Text: "hi"}})
 	big := EstimateTokens([]Msg{{Role: "assistant", ToolCalls: []ToolCall{
-		{ID: "c", Name: "write_file", Args: strings.Repeat("x", 4000)},
+		{ID: "c", Name: "run_code", Args: strings.Repeat("x", 4000)},
 	}}})
 	if big <= small {
 		t.Fatalf("tool arguments must count toward the budget: small=%d big=%d", small, big)

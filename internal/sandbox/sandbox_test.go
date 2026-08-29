@@ -159,7 +159,7 @@ func TestBridgeExposesOnlyAllowedTools(t *testing.T) {
 	bridge, err := Serve(dir, func(_ context.Context, name, args string) string {
 		called = append(called, name)
 		return `{"ok":true,"echo":` + args + `}`
-	}, []string{"read_file"})
+	}, []string{"get_weather"})
 	if err != nil {
 		t.Fatalf("serve: %v", err)
 	}
@@ -171,9 +171,9 @@ func TestBridgeExposesOnlyAllowedTools(t *testing.T) {
 
 	script, _ := WriteScript(dir, "program.py", `
 import agent_tools
-print("ALLOWED:", agent_tools.call("read_file", path="x.txt"))
+print("ALLOWED:", agent_tools.call("get_weather", location="Tokyo"))
 try:
-    agent_tools.call("delete_file", path="/etc/passwd")
+    agent_tools.call("change_thing", what="/etc/passwd")
     print("LEAKED")
 except RuntimeError as e:
     print("BLOCKED:", e)
@@ -193,8 +193,8 @@ except RuntimeError as e:
 	if !strings.Contains(res.Output, "BLOCKED:") {
 		t.Fatalf("expected a clear refusal for the unexposed tool: %q", res.Output)
 	}
-	if len(called) != 1 || called[0] != "read_file" {
-		t.Fatalf("dispatcher saw %v, want only read_file", called)
+	if len(called) != 1 || called[0] != "get_weather" {
+		t.Fatalf("dispatcher saw %v, want only get_weather", called)
 	}
 }
 
