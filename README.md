@@ -1,9 +1,12 @@
 # AI Agent (Go) — terminal or browser, on a real harness
 
-> **Branch `session-4`.** Each session of the course is a branch, with the agent
-> at the repo root — `git switch session-4` then `go run .`. This is the newest:
-> `session-3` is the same agent without the harness, `session-2` adds the
-> built-in diagram renderers, `session-1` has no tools at all.
+> **Branch `session-5`.** Each session of the course is a branch, with the agent
+> at the repo root — `git switch session-5` then `go run .`. This is the newest:
+> it takes the tools that changed the machine back out, leaving the harness and a
+> small read-only toolset. `session-4` is the same harness with the file, shell
+> and diagram tools still in it; `session-3` is the agent without the harness;
+> `session-2` adds the built-in diagram renderers; `session-1` has no tools at
+> all.
 
 An AI agent you talk to in a loop, **in the terminal or in a browser**. It
 answers from its own knowledge, searches the web, reports the weather, runs code
@@ -115,10 +118,10 @@ renders one glyphed line each, the browser pushes them down its SSE stream, and
 `.harness/events.jsonl` appends every one.
 
 ```
-▶ workflow.started    wf=acca4cb5 text=write "hello harness" to /tmp/demo.txt
+▶ workflow.started    wf=acca4cb5 text=change the config to light mode
 ▪ step.completed      wf=acca4cb5 name=model-00 ms=837
 ↪ agent.handoff       wf=acca4cb5 from=assistant to=operator
-✋ approval.requested  wf=acca4cb5 text=WRITE file "/tmp/demo.txt" (13 bytes)
+✋ approval.requested  wf=acca4cb5 text=Change the config?
 ⏸ workflow.suspended  wf=acca4cb5
 ```
 
@@ -265,22 +268,23 @@ front-ends can now tell "the human said no" from "no human answered", which used
 to be indistinguishable: a closed browser tab silently denied the action.
 Only a click or a keystroke is an answer. Everything else parks the run.
 
-The transcript below is the gate working on a file-writing tool — the kind of
-tool the operator exists to hold. The toolset ships without one at the moment;
-the machinery under it is what the walkthrough is about.
+The toolset ships with nothing dangerous in it, so the walkthrough below runs
+`change_thing` — the stub `tools/tools_test.go` gates to exercise exactly this
+path. Give the operator a real tool and the lines are identical with its name in
+them.
 
 ```
 $ go run .
-you> write "hello harness" to /tmp/demo.txt
+you> change the config to light mode
   ↪ agent.handoff       from=assistant to=operator
 ⚠️  Approve this action?
-    WRITE file "/tmp/demo.txt" (13 bytes)
+    Change the config?
     [y/N]:
 (no answer — parking this for later)
-⏸  awaiting approval: WRITE file "/tmp/demo.txt" (13 bytes)
+⏸  awaiting approval: Change the config?
    go run . -approve acca4cb5      (or -deny acca4cb5)
 
-$ # the process EXITED. nothing is running. nothing was written.
+$ # the process EXITED. nothing is running. nothing was changed.
 $ # hours or days pass. the server can reboot; it changes nothing.
 
 $ go run . -approve acca4cb5
@@ -290,13 +294,13 @@ $ go run . -approve acca4cb5
   ↪ agent.handoff       wf=acca4cb5 from=assistant to=operator
   ⏩ step.cached         wf=acca4cb5 name=model-01
   🖊 approval.resolved   wf=acca4cb5 approved=true
-  ✓ tool.completed      wf=acca4cb5 name=write_file result=Wrote /tmp/demo.txt
+  ✓ tool.completed      wf=acca4cb5 name=change_thing result=Changed the config.
   ✔ workflow.completed  wf=acca4cb5
 ```
 
 Say `-deny` instead and the model is told a human refused — so it explains that
-the change needs manual review rather than retrying blindly, and nothing is
-written.
+the change needs manual review rather than retrying blindly, and nothing
+happens.
 
 Two details that are easy to get wrong and worth stating:
 
@@ -311,9 +315,9 @@ Two details that are easy to get wrong and worth stating:
   diverges, and the symptom is a resumed workflow asking for the same approval
   twice. `TestHandoffThenParkResumesOntoTheSameCall` is the regression test.
 
-## The requirements → where they live
+## What it does → where it lives
 
-| # | Requirement | Where |
+| # | Capability | Where |
 |---|---|---|
 | 1 | Answer from own knowledge (no tool) | `agent.SystemPrompt` + loop returns when there are no tool calls — `agent/agent.go` |
 | 2 | Search the web | `NativeWebSearch` — OpenRouter's own `web` plugin — `tools/nativesearch.go` |
@@ -321,7 +325,7 @@ Two details that are easy to get wrong and worth stating:
 | 4 | Human-in-the-loop before danger | the `Approver` port every sensitive tool takes — `tools/tools.go`, `ui/console.go`, `web/session.go`; made durable by `approval/` |
 | 5 | Eval suite | `tools/tools_test.go` + `agent/eval_test.go` + `agent/eval_single_test.go` |
 
-## Beyond the five
+## Beyond the basics
 
 - **`get_weather`** — current temperature and wind for a place, via Open-Meteo's
   free, keyless APIs (geocode the name, then fetch conditions). Read-only, no
