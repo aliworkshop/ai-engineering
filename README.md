@@ -59,6 +59,51 @@ Both front-ends drive the *same* agent with the *same* tools and the *same*
 approval gate — the only difference is who answers the y/n and where the
 progress is printed.
 
+## RAG: the private reference (`corpus/`)
+
+Nine markdown files, 200–500 words each, one rule per file: subject–verb
+agreement, articles, verb tenses, prepositions, commas and punctuation,
+conditionals, pronouns, common L2 errors, modifiers and word order, style and
+register. `search_knowledge` embeds the query, ranks the corpus, and returns the
+best three with a similarity score each.
+
+This is the third way of getting information in front of a model, and the three
+do not substitute for each other:
+
+| Pattern | When the model sees it | Use for |
+|---|---|---|
+| Context (the system prompt) | Every turn | What the agent ALWAYS needs — role, output shape |
+| Web search | On demand, model decides | Fresh public facts |
+| **RAG** (this) | On demand, model decides | Your private corpus, in your wording |
+
+**Retrieval is TF-IDF cosine, not embeddings.** OpenRouter serves chat
+completions only — there is no embeddings endpoint behind this key — so the
+vectors are built locally: sublinear term frequency, smoothed IDF, L2-normalized,
+cosine as a dot product. The *shape* is the one a hosted vector store hides
+(turn the query into a vector, rank by cosine, return the top few with scores),
+and the tool's interface is unchanged, so swapping in
+`text-embedding-3-small` later means rewriting `weigh()` and nothing else.
+
+**No stopword list, deliberately.** In a grammar reference the function words
+*are* the subject matter — "a", "an", "the", "since", "for". IDF already pushes
+a word that appears in every document to nearly zero weight, which is the job a
+stopword list would do badly here.
+
+**topK = 3.** One result is brittle (top match wrong → nothing to fall back on);
+five is noise on a corpus this size. Three, with the score attached, lets the
+model see how good its best match was.
+
+**The score ranks results against each other, not against an absolute bar.**
+Cosine against a 300-word document is small for any short query — *"a vs an"*
+scores 0.13 on exactly the right file. So the prompt tells the agent to decide
+coverage by *reading* what came back, and to cite a file only if its text states
+the rule being used. An earlier version leaned on the number and produced a
+confident citation of `commas-and-punctuation` for a question about *who* vs
+*whom*.
+
+**When a rule is missing, the fix is the corpus, not the code.** That who/whom
+answer is what `corpus/pronouns.md` exists for. Add a file, re-run the evals.
+
 ## Architecture
 
 Dependencies point inward. A UI knows the agent; the agent knows an abstract
@@ -441,6 +486,12 @@ go test ./... -short     # fast, offline, deterministic (no key, no network)
   dispatch what it does not hold. The gated tool these use is a stub defined in
   the test file, so the seams stay covered no matter which real tools the
   toolset happens to carry.
+- **`tools` retrieval** — the ranking, against the *real* corpus rather than a
+  fixture, because "does the question a learner asks reach the file that answers
+  it" is the only thing this tool does: eight questions, eight expected files.
+  Plus the contract around it — at most three hits, ranked, scored in (0,1],
+  never more confident than it should be on an off-topic query, and a missing
+  corpus is an error rather than a quiet empty result.
 - **`durable` package** — the claim the package exists to make, measured: a
   crashed run resumes without re-executing a single completed step, a failed step
   is *not* checkpointed so it can be retried, state survives through a brand new

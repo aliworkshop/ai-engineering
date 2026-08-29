@@ -17,6 +17,7 @@ type settings struct {
 	searchClient *openrouter.OpenRouter
 	searchModel  string
 	sandboxDir   string
+	corpusDir    string
 	specialists  map[string]string
 	extra        []Tool
 }
@@ -53,6 +54,14 @@ func WithSandbox(dir string) Option {
 	return func(s *settings) { s.sandboxDir = dir }
 }
 
+// WithKnowledge enables search_knowledge over the corpus in dir — the private
+// reference the agent can look things up in. Opt-in like the rest: an agent
+// with no corpus of its own should not advertise a tool that would find
+// nothing.
+func WithKnowledge(dir string) Option {
+	return func(s *settings) { s.corpusDir = dir }
+}
+
 // WithSpecialists enables the handoff tool, naming the agents that can be
 // handed to and what each is for. Without it the agent has no way to transfer
 // control, which is the right default for a single-agent setup.
@@ -81,6 +90,9 @@ func Default(approver Approver, opts ...Option) *Registry {
 	}
 	if s.searchClient != nil {
 		list = append(list, NativeWebSearch{Client: s.searchClient, Model: s.searchModel})
+	}
+	if s.corpusDir != "" {
+		list = append(list, &SearchKnowledge{Dir: s.corpusDir})
 	}
 
 	// Held as a pointer so its wiring can be completed after the registry
