@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AI agent</title>
+<title>English teacher</title>
 <!-- Inline, so the browser's automatic /favicon.ico request doesn't 404. -->
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='26' font-size='26'%3E%F0%9F%A4%96%3C/text%3E%3C/svg%3E">
 <style>
@@ -141,7 +141,7 @@
 </head>
 <body>
   <header class="top">
-    <h1>AI agent</h1>
+    <h1>English teacher</h1>
     <span id="status"></span>
     <span class="spacer"></span>
     <button id="reset">New chat</button>
@@ -152,7 +152,7 @@
       <div id="log"><div class="inner" id="logInner"></div></div>
       <form id="composer">
         <div class="inner">
-          <textarea id="input" rows="1" placeholder="Ask anything — Enter sends, Shift+Enter adds a line" autofocus></textarea>
+          <textarea id="input" rows="1" placeholder="Paste text to correct, or ask a grammar question — Enter sends, Shift+Enter adds a line" autofocus></textarea>
           <button type="submit" class="primary" id="send">Send</button>
         </div>
       </form>
@@ -331,7 +331,7 @@ document.getElementById("reset").onclick = async () => {
   notice("new conversation — the agent has forgotten everything above");
 };
 
-notice("Ask anything. Dangerous tools — writing, editing, or deleting files — stop here for your approval first.");
+notice("Paste text to have it corrected, or ask about a rule. Anything that would change your machine stops here for your approval first.");
 </script>
 </body>
 </html>

@@ -377,7 +377,7 @@ func TestIndexServesThePageAndStartsASession(t *testing.T) {
 	}
 	defer res.Body.Close()
 	body, _ := io.ReadAll(res.Body)
-	if res.StatusCode != http.StatusOK || !bytes.Contains(body, []byte("<title>AI agent</title>")) {
+	if res.StatusCode != http.StatusOK || !bytes.Contains(body, []byte("<title>English teacher</title>")) {
 		t.Fatalf("got %d and %d bytes, want the chat page", res.StatusCode, len(body))
 	}
 	if len(res.Cookies()) == 0 {

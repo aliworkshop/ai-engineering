@@ -97,7 +97,7 @@ func (c *Console) Run(ctx context.Context, ag *agent.Agent) {
 	ag.OnToolCall = c.logToolCall
 	ag.OnCompact = c.logCompact
 
-	fmt.Fprintln(c.out, "AI agent ready. Ask me anything. Type 'exit' to quit.")
+	fmt.Fprintln(c.out, "English teacher ready. Paste text to correct, or ask about a rule. Type 'exit' to quit.")
 	for {
 		fmt.Fprint(c.out, "\nyou> ")
 		line, err := c.in.ReadString('\n')

@@ -1,4 +1,4 @@
-# AI Agent (Go) — terminal or browser, on a real harness
+# English teacher (Go) — terminal or browser, on a real harness
 
 > **Branch `session-5`.** Each session of the course is a branch, with the agent
 > at the repo root — `git switch session-5` then `go run .`. This is the newest:
@@ -8,14 +8,16 @@
 > `session-2` adds the built-in diagram renderers; `session-1` has no tools at
 > all.
 
-An AI agent you talk to in a loop, **in the terminal or in a browser**. It
-answers from its own knowledge, searches the web, reports the weather, runs code
-in a sandbox, and **asks a human before doing anything dangerous**.
+An **English teacher** you talk to in a loop, **in the terminal or in a
+browser**. Paste it a paragraph and it comes back corrected, with a line per
+change and the rule behind it; ask it a grammar question and it looks the rule
+up in its own reference before answering. It **asks a human before doing
+anything dangerous** — and holds no dangerous tool at all, which is a stronger
+statement than the promise.
 
-The tools that changed the machine have been taken out — this is the harness
-with a deliberately small toolset, waiting for the next agent's own tools. Every
-seam they hang off is still here and still tested: the approval gate, the
-operator specialist that holds anything dangerous, the sandbox bridge.
+The teacher is one agent on a general-purpose harness. Swapping in a different
+job means a prompt, a corpus and a tool list — everything below that line is
+unchanged.
 
 Underneath it is **the harness** — the runtime layer between the agent loop and
 the real world, and the part most agents don't have until it bites them. One
@@ -38,8 +40,9 @@ Model access goes through the [OpenRouter Go SDK](https://github.com/OpenRouterT
 ```sh
 # needs OPENROUTER_API_KEY in .env
 
-go run .                 # terminal: type questions, 'exit' to quit
+go run .                 # terminal: paste text or ask a question, 'exit' to quit
 go run . -http :8080     # browser: open http://localhost:8080
+go run . -ask "..."      # one turn, prints only the answer (what the evals drive)
 go run . -v              # ...with the full harness event stream
 
 # the harness's own commands
@@ -58,6 +61,45 @@ later changes the storage, not a single idea above it. It is gitignored, and
 Both front-ends drive the *same* agent with the *same* tools and the *same*
 approval gate — the only difference is who answers the y/n and where the
 progress is printed.
+
+## The English teacher (`corpus/`, `tools/knowledge.go`, `agent.TeacherPrompt`)
+
+The agent has one job: **correct English text, and answer questions about
+English grammar**. Paste a paragraph and it comes back corrected, with a line
+per change and the rule behind it; ask about a rule and you get the rule, an
+example, and the file it came from.
+
+```
+$ go run . -ask "she dont like when i writes letters, i have went there since 3 years"
+
+**Corrected**
+She doesn't like it when I write letters. I have been going there for three years.
+
+**Changes**
+- "dont" -> "doesn't" — subject-verb agreement (source: subject-verb-agreement)
+- "writes" -> "write" — the verb agrees with I (source: subject-verb-agreement)
+- "have went" -> "have been going" — past participle after have (source: verb-tenses)
+- "since 3 years" -> "for three years" — since takes a point, for takes a duration (source: verb-tenses)
+```
+
+Three decisions carry it.
+
+**The output shape is fixed.** Corrected text first and whole, so it can be
+pasted straight back; then the changes, each naming the rule. A correction the
+user has to hunt for is worth less than one they can use.
+
+**It corrects the text; it does not answer it.** "where is the station" is a
+sentence to punctuate, not a question to answer — a failure mode every
+correction agent has, and one line of prompt fixes.
+
+**It stops when the question is answered.** No tour of neighbouring rules, no
+recap. That sentence is not politeness: it is what the relevancy score below
+is measuring.
+
+The agent holds exactly two tools — `search_knowledge` and `handoff` — and the
+roster is why. A teacher with a weather tool and a file writer is a teacher that
+can be talked into using them; least privilege here is as much about staying on
+the subject as about safety.
 
 ## RAG: the private reference (`corpus/`)
 
@@ -211,7 +253,7 @@ renders one glyphed line each, the browser pushes them down its SSE stream, and
 ```
 ▶ workflow.started    wf=acca4cb5 text=change the config to light mode
 ▪ step.completed      wf=acca4cb5 name=model-00 ms=837
-↪ agent.handoff       wf=acca4cb5 from=assistant to=operator
+↪ agent.handoff       wf=acca4cb5 from=teacher to=operator
 ✋ approval.requested  wf=acca4cb5 text=Change the config?
 ⏸ workflow.suspended  wf=acca4cb5
 ```
@@ -299,12 +341,14 @@ keep when the other agent is genuinely different — and the case that always
 qualifies is least privilege.
 
 ```
-assistant  get_weather · openrouter_web_search · run_code · investigate · handoff
-operator   run_code   ← plus every tool that changes the machine
+teacher   search_knowledge · handoff
+operator  run_code   ← plus every tool that changes the machine
 ```
 
-The assistant cannot be *talked into* deleting something, because the tool that
-would do it is not in its list to call. It hands over instead, and the switch is
+The teacher cannot be *talked into* deleting something, because the tool that
+would do it is not in its list to call. Note the second thing that list buys:
+an agent that holds a weather tool and a web search will eventually reach for
+them mid-lesson. Least privilege keeps it safe *and* keeps it on the subject. It hands over instead, and the switch is
 recorded in the workflow so a crash resumes as the operator. Run with `-v` to
 see the roster printed at startup.
 
@@ -367,7 +411,7 @@ them.
 ```
 $ go run .
 you> change the config to light mode
-  ↪ agent.handoff       from=assistant to=operator
+  ↪ agent.handoff       from=teacher to=operator
 ⚠️  Approve this action?
     Change the config?
     [y/N]:
@@ -382,7 +426,7 @@ $ go run . -approve acca4cb5
   ⟲ workflow.resumed    wf=acca4cb5 agent=operator
   ⏩ step.cached         wf=acca4cb5 name=model-00        # replayed, not re-billed
   ⏩ step.cached         wf=acca4cb5 name=tool-call_2D4S  # the handoff, replayed
-  ↪ agent.handoff       wf=acca4cb5 from=assistant to=operator
+  ↪ agent.handoff       wf=acca4cb5 from=teacher to=operator
   ⏩ step.cached         wf=acca4cb5 name=model-01
   🖊 approval.resolved   wf=acca4cb5 approved=true
   ✓ tool.completed      wf=acca4cb5 name=change_thing result=Changed the config.
@@ -410,11 +454,13 @@ Two details that are easy to get wrong and worth stating:
 
 | # | Capability | Where |
 |---|---|---|
-| 1 | Answer from own knowledge (no tool) | `agent.SystemPrompt` + loop returns when there are no tool calls — `agent/agent.go` |
-| 2 | Search the web | `NativeWebSearch` — OpenRouter's own `web` plugin — `tools/nativesearch.go` |
-| 3 | Run code in a sandbox | `RunCode` + the tool bridge — `tools/code.go`, `sandbox/` |
-| 4 | Human-in-the-loop before danger | the `Approver` port every sensitive tool takes — `tools/tools.go`, `ui/console.go`, `web/session.go`; made durable by `approval/` |
-| 5 | Eval suite | `tools/tools_test.go` + `agent/eval_test.go` + `agent/eval_single_test.go` |
+| 1 | Correct text, answer grammar questions | `agent.TeacherPrompt` + `agent.TeacherTools` — `agent/roster.go` |
+| 2 | Look a rule up in a private reference | `SearchKnowledge` over `corpus/` — `tools/knowledge.go` |
+| 3 | Answer from own knowledge (no tool) | the loop returns when there are no tool calls — `agent/agent.go` |
+| 4 | Search the web | `NativeWebSearch` — OpenRouter's own `web` plugin — `tools/nativesearch.go` |
+| 5 | Run code in a sandbox | `RunCode` + the tool bridge — `tools/code.go`, `sandbox/` |
+| 6 | Human-in-the-loop before danger | the `Approver` port every sensitive tool takes — `tools/tools.go`, `ui/console.go`, `web/session.go`; made durable by `approval/` |
+| 7 | Eval suite | `tools/*_test.go` + `agent/eval*_test.go` + `evalscore/` (relevancy) + `evals/` (Braintrust) |
 
 ## Beyond the basics
 

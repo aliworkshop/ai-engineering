@@ -50,6 +50,12 @@ const SearchModel = "openai/gpt-4o-mini"
 // a single idea above it.
 const harnessDir = ".harness"
 
+// corpusDir is the private reference the teacher searches: one markdown file
+// per rule. Plain files for the same reason the harness keeps plain files —
+// adding a rule is adding a file, and you can read the whole knowledge base
+// with ls and cat.
+const corpusDir = "corpus"
+
 func harnessPath(parts ...string) string {
 	return filepath.Join(append([]string{harnessDir}, parts...)...)
 }
@@ -59,6 +65,7 @@ func main() {
 	approveID := flag.String("approve", "", "approve the action a parked workflow is waiting on, then finish the run")
 	denyID := flag.String("deny", "", "refuse the action a parked workflow is waiting on, then finish the run")
 	resumeID := flag.String("resume", "", "resume a workflow that stopped early")
+	ask := flag.String("ask", "", "answer one question and exit, printing nothing but the answer")
 	list := flag.Bool("list", false, "list workflows and their status")
 	verbose := flag.Bool("v", false, "print the full harness event stream, including every model turn and tool call")
 	flag.Parse()
@@ -85,6 +92,8 @@ func main() {
 		exitOn(decide(client, *denyID, false))
 	case *resumeID != "":
 		exitOn(resume(client, *resumeID))
+	case *ask != "":
+		exitOn(askOnce(client, *ask, *verbose))
 	case *addr != "":
 		serveWeb(*addr, client)
 	default:
@@ -141,29 +150,24 @@ func harness(client *openrouter.OpenRouter, approver *approverOf, emitter events
 
 	// The full toolbox: every tool, with the durable gate on the dangerous ones.
 	roster := agent.Roster{
-		agent.AssistantName: {Name: agent.AssistantName, Purpose: agent.AssistantPurpose},
-		agent.OperatorName:  {Name: agent.OperatorName, Purpose: agent.OperatorPurpose},
+		agent.TeacherName:  {Name: agent.TeacherName, Purpose: agent.TeacherPurpose},
+		agent.OperatorName: {Name: agent.OperatorName, Purpose: agent.OperatorPurpose},
 	}
 	registry := tools.Default(gate, search,
 		tools.WithSandbox(harnessPath("sandbox")),
+		tools.WithKnowledge(corpusDir),
 		tools.WithSpecialists(roster.Purposes()),
 		tools.WithExtra(agent.InvestigateTool{Sup: supervisor}),
 	)
 
 	// An agent is data: a name, a prompt, and the subset of tools it holds
 	// (Part 5). Whatever changes the machine belongs to the operator; the
-	// assistant does not hold it, and hands the work over instead.
-	roster[agent.AssistantName] = agent.Spec{
-		Name: agent.AssistantName, Purpose: agent.AssistantPurpose,
-		Prompt: agent.AssistantPrompt, Tools: registry.Subset(agent.AssistantTools...),
-	}
-	roster[agent.OperatorName] = agent.Spec{
-		Name: agent.OperatorName, Purpose: agent.OperatorPurpose,
-		Prompt: agent.OperatorPrompt, Tools: registry.Subset(agent.OperatorTools...),
-	}
+	// teacher does not hold it, and hands the work over instead. The same
+	// roster is what the evals grade — see agent.TeacherRoster.
+	roster = agent.TeacherRoster(registry)
 
 	assistant := agent.New(client, Model, registry).
-		WithRoster(roster, agent.AssistantName).
+		WithRoster(roster, agent.TeacherName).
 		WithStore(store).
 		WithGate(gate).
 		WithEvents(emitter)
@@ -183,7 +187,7 @@ func describeRoster(roster agent.Roster) {
 	if !verboseWiring {
 		return
 	}
-	for _, name := range []string{agent.AssistantName, agent.OperatorName} {
+	for _, name := range []string{agent.TeacherName, agent.OperatorName} {
 		spec, ok := roster[name]
 		if !ok {
 			continue
@@ -229,6 +233,27 @@ func runTerminal(client *openrouter.OpenRouter, verbose bool) {
 	exitOn(err)
 
 	console.Run(context.Background(), assistant)
+}
+
+// askOnce runs a single turn and prints the answer, nothing else — the shape
+// anything outside Go needs to drive the agent: a shell script, a CI step, or
+// an evaluator in another language shells out to this and reads stdout.
+//
+// The progress stream goes to stderr so stdout stays exactly one answer, and
+// nobody is at a keyboard, so an approval nobody can answer parks the run in
+// the usual way and reports it on stderr.
+func askOnce(client *openrouter.OpenRouter, question string, verbose bool) error {
+	assistant, _, err := harness(client, &approverOf{live: refuseAll{}}, bus(os.Stderr, !verbose))
+	if err != nil {
+		return err
+	}
+
+	answer, err := assistant.Ask(context.Background(), question)
+	if err != nil {
+		return err
+	}
+	fmt.Println(answer)
+	return nil
 }
 
 // serveWeb runs the browser UI. Each browser session gets its own agent, with
