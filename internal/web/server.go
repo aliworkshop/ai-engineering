@@ -19,8 +19,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/aliworkshop/ai-engineering-course/internal/durable"
 )
 
 // Assistant is all the server needs from the agent: ask a question, get an
@@ -28,6 +26,14 @@ import (
 // concrete type keeps this package testable without a model behind it.
 type Assistant interface {
 	Ask(ctx context.Context, input string) (string, error)
+}
+
+// Resumable is the optional half: an assistant that can pick a parked or
+// crashed run back up. It is a second interface rather than a second method on
+// Assistant so a test stand-in stays three lines — and so the Resume button can
+// honestly report "this build cannot resume" instead of the page pretending.
+type Resumable interface {
+	Resume(ctx context.Context, workflowID string) (string, error)
 }
 
 // NewAssistant builds the assistant for one browser session. It is handed the
@@ -56,11 +62,28 @@ const (
 type Server struct {
 	newAssistant NewAssistant
 
+	// Workflows lists what the runtime is holding, and Reset throws it away.
+	// Both are optional: nil means the front-end simply doesn't offer the
+	// control. They are funcs rather than a store because the server has no
+	// business knowing where the harness keeps its files — main.go does.
+	Workflows func() ([]Workflow, error)
+	Reset     func() error
+
 	// mu guards sessions and every session's lastSeen field. Turns themselves
 	// are serialized per session by Session.turn, not here, so a long turn in
 	// one browser never blocks a request from another.
 	mu       sync.Mutex
 	sessions map[string]*Session
+}
+
+// Workflow is one row of the runtime's state, as the page shows it.
+type Workflow struct {
+	ID      string `json:"id"`
+	Status  string `json:"status"`
+	Agent   string `json:"agent,omitempty"`
+	Steps   int    `json:"steps"`
+	Input   string `json:"input,omitempty"`
+	Waiting string `json:"waiting,omitempty"` // the action a parked run needs a human for
 }
 
 // New returns a server that builds each session's conversation with the given
@@ -80,6 +103,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/chat", s.handleChat)
 	mux.HandleFunc("POST /api/approve", s.handleApprove)
 	mux.HandleFunc("POST /api/reset", s.handleReset)
+	mux.HandleFunc("GET /api/workflows", s.handleWorkflows)
+	mux.HandleFunc("POST /api/resume", s.handleResume)
+	mux.HandleFunc("POST /api/clear", s.handleClear)
 	return mux
 }
 
@@ -88,13 +114,32 @@ func (s *Server) Handler() http.Handler {
 // There is deliberately no WriteTimeout: a turn is a single streaming response
 // that stays open for as long as the agent works, and a write deadline would
 // cut it off mid-thought. ReadHeaderTimeout still guards the cheap half.
-func ListenAndServe(addr string, newAssistant NewAssistant) error {
+func ListenAndServe(addr string, newAssistant NewAssistant, opts ...Option) error {
+	server := New(newAssistant)
+	for _, opt := range opts {
+		opt(server)
+	}
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           New(newAssistant).Handler(),
+		Handler:           server.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	return srv.ListenAndServe()
+}
+
+// Option configures the server's optional halves — the controls that need to
+// reach the runtime's own files, which this package deliberately knows nothing
+// about.
+type Option func(*Server)
+
+// WithWorkflows lets the page list what the runtime is holding.
+func WithWorkflows(list func() ([]Workflow, error)) Option {
+	return func(s *Server) { s.Workflows = list }
+}
+
+// WithReset lets the page throw the runtime's state away.
+func WithReset(reset func() error) Option {
+	return func(s *Server) { s.Reset = reset }
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -116,6 +161,12 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Message string `json:"message"`
+
+		// CrashAfter is the demo switch: cancel the turn once this many tools
+		// have completed, leaving the workflow mid-run on disk. It belongs to
+		// the request rather than to the server because it is a thing the class
+		// does once, to watch Resume put the run back together.
+		CrashAfter int `json:"crash_after"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxMessageBytes)).Decode(&req); err != nil {
 		http.Error(w, "could not read the message", http.StatusBadRequest)
@@ -153,22 +204,113 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
-	sess.begin(r.Context(), &sseWriter{w: w, flush: flusher.Flush})
-	defer sess.end()
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
 
-	answer, err := sess.assistant.Ask(r.Context(), message)
-	if err != nil {
-		// A parked workflow is not an error the user should see as one: nothing
-		// broke, a decision is outstanding, and the run is safe on disk until
-		// someone makes it. Reported as its own event so the page can say so.
-		if parked, ok := durable.IsSuspended(err); ok {
-			sess.emit(event{Type: "suspended", Text: parked.Reason, ID: parked.ID})
-			return
-		}
-		sess.emit(event{Type: "error", Text: err.Error()})
+	sess.begin(ctx, &sseWriter{w: w, flush: flusher.Flush})
+	defer sess.end()
+	sess.arm(req.CrashAfter, cancel)
+
+	sess.report(sess.assistant.Ask(ctx, message))
+}
+
+// handleResume picks a parked or crashed run back up and streams the second
+// half of it — the same recovery pass `go run . -resume <id>` performs, with
+// the page standing in for the terminal.
+//
+// This is the browser half of Part 2 and Part 7. Until now the runtime could
+// park a run that only a terminal could revive, which made the durable story
+// something you had to take on faith at the exact moment it paid off.
+func (s *Server) handleResume(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&req); err != nil {
+		http.Error(w, "could not read the request", http.StatusBadRequest)
 		return
 	}
-	sess.emit(event{Type: "answer", Text: answer})
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "this server cannot stream", http.StatusInternalServerError)
+		return
+	}
+
+	sess := s.session(w, r)
+	resumable, ok := sess.assistant.(Resumable)
+	if !ok {
+		http.Error(w, "this build cannot resume workflows", http.StatusNotImplemented)
+		return
+	}
+
+	id := strings.TrimSpace(req.ID)
+	if id == "" {
+		id = sess.Workflow() // whatever this browser was last running
+	}
+	if id == "" {
+		http.Error(w, "no workflow to resume", http.StatusBadRequest)
+		return
+	}
+
+	if !sess.turn.TryLock() {
+		http.Error(w, "this conversation is already answering a question", http.StatusConflict)
+		return
+	}
+	defer sess.turn.Unlock()
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	sess.begin(r.Context(), &sseWriter{w: w, flush: flusher.Flush})
+	defer sess.end()
+	sess.emitStatus("recovering")
+
+	sess.report(resumable.Resume(r.Context(), id))
+}
+
+// handleWorkflows shows what the runtime is holding, so the page can offer a
+// resume for a run this browser never started — a crash from an earlier
+// process, or a decision made from the CLI.
+func (s *Server) handleWorkflows(w http.ResponseWriter, r *http.Request) {
+	if s.Workflows == nil {
+		writeJSON(w, []Workflow{})
+		return
+	}
+	rows, err := s.Workflows()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if rows == nil {
+		rows = []Workflow{}
+	}
+	writeJSON(w, rows)
+}
+
+// handleClear throws the runtime's state away — the browser's `rm -rf
+// .harness`. Destructive on purpose and separate from /api/reset, which only
+// forgets the conversation: one of them costs you a history, the other costs
+// you every parked approval on disk.
+func (s *Server) handleClear(w http.ResponseWriter, r *http.Request) {
+	if s.Reset == nil {
+		http.Error(w, "this build cannot clear the harness state", http.StatusNotImplemented)
+		return
+	}
+	if err := s.Reset(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func writeJSON(w http.ResponseWriter, body any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	_ = json.NewEncoder(w).Encode(body)
 }
 
 // handleApprove delivers the human's y/n back to the tool that is blocked

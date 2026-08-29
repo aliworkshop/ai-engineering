@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+
+	"github.com/aliworkshop/ai-engineering-course/internal/events"
 )
 
 // indexHTML is the whole front-end: one page, no build step, no CDN. Embedding
@@ -22,6 +24,13 @@ var indexHTML []byte
 //	answer    the turn is done     — Text
 //	suspended nobody answered; the run is parked on disk — ID, Text
 //	error     the turn failed      — Text
+//	status    the run changed state — Text (idle, working, parked, recovering…)
+//	harness   one typed harness event, verbatim — Harness
+//
+// That last one is the whole event stream forwarded as-is, and it is what the
+// inspector pane renders. The terminal front-end has always shown every event;
+// a browser that only sees tool calls is looking at a redaction of the same
+// run.
 type event struct {
 	Type   string `json:"type"`
 	Name   string `json:"name,omitempty"`
@@ -30,6 +39,8 @@ type event struct {
 	ID     string `json:"id,omitempty"`
 	Action string `json:"action,omitempty"`
 	Text   string `json:"text,omitempty"`
+
+	Harness *events.Event `json:"harness,omitempty"`
 }
 
 // sseWriter writes server-sent events to a response that stays open for the

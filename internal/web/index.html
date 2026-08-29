@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>English teacher</title>
 <!-- Inline, so the browser's automatic /favicon.ico request doesn't 404. -->
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='26' font-size='26'%3E%F0%9F%A4%96%3C/text%3E%3C/svg%3E">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='26' font-size='26'%3E%F0%9F%93%9D%3C/text%3E%3C/svg%3E">
 <style>
   :root {
     color-scheme: light dark;
@@ -18,6 +18,10 @@
     --warn-bg: #fff6e5;
     --warn-line: #e8b552;
     --err: #c2372c;
+    --ok: #1f8a4c;
+    --violet: #7c5cd6;
+    --amber: #b5811a;
+    --code: #f1f3f6;
   }
   @media (prefers-color-scheme: dark) {
     :root {
@@ -30,6 +34,10 @@
       --warn-bg: #33290f;
       --warn-line: #b98a25;
       --err: #ff8a7a;
+      --ok: #5fce90;
+      --violet: #b39bff;
+      --amber: #e0b055;
+      --code: #262b33;
     }
   }
 
@@ -48,14 +56,13 @@
   header.top {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 10px;
     padding: 10px 16px;
     border-bottom: 1px solid var(--line);
     background: var(--panel);
   }
   header.top h1 { font-size: 15px; font-weight: 600; margin: 0; }
   header.top .spacer { flex: 1; }
-  #status { color: var(--muted); font-size: 13px; }
 
   button {
     font: inherit;
@@ -68,11 +75,25 @@
   }
   button:hover:not(:disabled) { border-color: var(--accent); }
   button:disabled { opacity: .5; cursor: default; }
-  button.primary {
-    background: var(--accent);
-    border-color: var(--accent);
-    color: #fff;
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.small { padding: 3px 8px; font-size: 12px; border-radius: 6px; }
+
+  /* The status pill: what the runtime is doing, in one word. "parked" is the
+     state worth seeing from across a room — nothing is happening, and that is
+     correct rather than broken. */
+  #status {
+    font-size: 12px;
+    padding: 3px 9px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    color: var(--muted);
+    white-space: nowrap;
   }
+  #status.working { color: var(--accent); border-color: var(--accent); }
+  #status.parked { color: var(--amber); border-color: var(--warn-line); background: var(--warn-bg); }
+  #status.recovering { color: var(--violet); border-color: var(--violet); }
+  #status.crashed, #status.failed { color: var(--err); border-color: var(--err); }
+  #status.done { color: var(--ok); border-color: var(--ok); }
 
   main { flex: 1; display: flex; min-height: 0; }
 
@@ -80,14 +101,28 @@
   #log { flex: 1; overflow-y: auto; padding: 20px 16px; }
   .inner { max-width: 760px; margin: 0 auto; display: flex; flex-direction: column; gap: 12px; }
 
-  .msg { padding: 10px 14px; border-radius: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
-  .msg.you { align-self: flex-end; max-width: 80%; background: var(--accent); color: #fff; }
-  .msg.agent { align-self: flex-start; max-width: 90%; background: var(--panel); border: 1px solid var(--line); }
-  .msg.error { align-self: flex-start; background: var(--panel); border: 1px solid var(--err); color: var(--err); }
+  .msg { padding: 10px 14px; border-radius: 12px; overflow-wrap: anywhere; }
+  .msg.you { align-self: flex-end; max-width: 80%; background: var(--accent); color: #fff; white-space: pre-wrap; }
+  .msg.agent { align-self: flex-start; max-width: 92%; background: var(--panel); border: 1px solid var(--line); }
+  .msg.error { align-self: flex-start; background: var(--panel); border: 1px solid var(--err); color: var(--err); white-space: pre-wrap; }
 
   .notice { align-self: flex-start; color: var(--muted); font-size: 13px; }
 
-  details.tool { align-self: flex-start; max-width: 90%; font-size: 13px; color: var(--muted); }
+  /* Markdown, as the agent writes it. The teacher answers in headings, bold
+     corrections and bullet lists; rendering that as raw asterisks throws away
+     half of what it said. */
+  .md > *:first-child { margin-top: 0; }
+  .md > *:last-child { margin-bottom: 0; }
+  .md h3, .md h4, .md h5, .md h6 { font-size: 14px; margin: 14px 0 6px; }
+  .md p { margin: 8px 0; }
+  .md ul, .md ol { margin: 8px 0; padding-left: 22px; }
+  .md li { margin: 3px 0; }
+  .md code { background: var(--code); padding: 1px 5px; border-radius: 5px; font-size: 13px; }
+  .md pre { background: var(--code); padding: 10px 12px; border-radius: 8px; overflow-x: auto; }
+  .md pre code { background: none; padding: 0; }
+  .md a { color: var(--accent); }
+
+  details.tool { align-self: flex-start; max-width: 92%; font-size: 13px; color: var(--muted); }
   details.tool summary { cursor: pointer; overflow-wrap: anywhere; }
   details.tool pre {
     margin: 6px 0 0;
@@ -110,21 +145,35 @@
     padding: 12px 14px;
   }
   .approval h3 { margin: 0 0 8px; font-size: 14px; }
-  .approval pre {
-    margin: 0 0 10px;
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-    font-size: 13px;
-  }
+  .approval pre { margin: 0 0 10px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; }
   .approval .buttons { display: flex; gap: 8px; }
   .approval .verdict { color: var(--muted); font-size: 13px; }
 
-  form#composer {
-    border-top: 1px solid var(--line);
-    background: var(--panel);
-    padding: 12px 16px;
+  /* The activity line. A spinner alone says "something is happening"; the label
+     says which step, which is the difference between a progress bar and an
+     inspector. */
+  #activity {
+    align-self: flex-start;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--muted);
+    font-size: 13px;
   }
-  form#composer .inner { flex-direction: row; align-items: flex-end; gap: 8px; }
+  .spin {
+    width: 13px; height: 13px;
+    border: 2px solid var(--line);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin .7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  form#composer { border-top: 1px solid var(--line); background: var(--panel); padding: 12px 16px; }
+  form#composer .inner { gap: 8px; }
+  form#composer .row { display: flex; align-items: flex-end; gap: 8px; }
+  form#composer .opts { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
+  form#composer .opts label { display: flex; align-items: center; gap: 5px; cursor: pointer; }
   #input {
     flex: 1;
     resize: none;
@@ -137,14 +186,86 @@
     max-height: 200px;
   }
   #input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+
+  /* The inspector: the same event stream the terminal renders, unfiltered. */
+  aside#inspector {
+    width: 40%;
+    min-width: 320px;
+    border-left: 1px solid var(--line);
+    background: var(--panel);
+    display: flex;
+    flex-direction: column;
+  }
+  aside#inspector > header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--line);
+    font-size: 12px;
+    color: var(--muted);
+  }
+  aside#inspector > header .spacer { flex: 1; }
+
+  #runs { border-bottom: 1px solid var(--line); padding: 6px 8px; display: flex; flex-direction: column; gap: 4px; max-height: 25%; overflow-y: auto; }
+  #runs:empty { display: none; }
+  .run { display: flex; align-items: center; gap: 8px; font-size: 12px; padding: 4px 6px; border-radius: 6px; }
+  .run:hover { background: var(--bg); }
+  .run .id { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); }
+  .run .task { flex: 1; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .run.parked .st { color: var(--amber); }
+
+  #events { flex: 1; overflow-y: auto; padding: 6px 8px; font-size: 12px; }
+  .event {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 7px;
+    padding: 3px 6px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .event:hover { background: var(--bg); }
+  .event .glyph { width: 1em; text-align: center; }
+  .event .etype { color: var(--text); }
+  .event .esummary { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 45%; }
+  .event .fill { flex: 1; }
+  .event .ets { color: var(--muted); opacity: .7; }
+  .event.blue .glyph, .event.blue .etype { color: var(--accent); }
+  .event.green .glyph, .event.green .etype { color: var(--ok); }
+  .event.amber .glyph, .event.amber .etype { color: var(--amber); }
+  .event.violet .glyph, .event.violet .etype { color: var(--violet); }
+  .event.red .glyph, .event.red .etype { color: var(--err); }
+  .event .edetail {
+    flex-basis: 100%;
+    margin: 4px 0 2px;
+    padding: 8px 10px;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    max-height: 260px;
+    overflow: auto;
+  }
+  #empty { color: var(--muted); padding: 10px 6px; }
+
+  @media (max-width: 900px) {
+    main { flex-direction: column; }
+    aside#inspector { width: auto; height: 40%; border-left: none; border-top: 1px solid var(--line); }
+  }
 </style>
 </head>
 <body>
   <header class="top">
     <h1>English teacher</h1>
-    <span id="status"></span>
+    <span id="status">idle</span>
     <span class="spacer"></span>
-    <button id="reset">New chat</button>
+    <button id="resume" class="small" disabled title="Pick a parked or crashed run back up">Resume</button>
+    <button id="reset" class="small">New chat</button>
+    <button id="clear" class="small" title="Delete every workflow, decision and event on disk">Clear state</button>
+    <button id="toggleInspector" class="small">Hide events</button>
   </header>
 
   <main>
@@ -152,11 +273,29 @@
       <div id="log"><div class="inner" id="logInner"></div></div>
       <form id="composer">
         <div class="inner">
-          <textarea id="input" rows="1" placeholder="Paste text to correct, or ask a grammar question — Enter sends, Shift+Enter adds a line" autofocus></textarea>
-          <button type="submit" class="primary" id="send">Send</button>
+          <div class="row">
+            <textarea id="input" rows="1" placeholder="Paste text to correct, or ask a grammar question — Enter sends, Shift+Enter adds a line" autofocus></textarea>
+            <button type="submit" class="primary" id="send">Send</button>
+          </div>
+          <div class="opts">
+            <label title="Kill the run after its first tool call, leaving the workflow mid-flight on disk. Then press Resume.">
+              <input type="checkbox" id="crash"> crash mid-run
+            </label>
+          </div>
         </div>
       </form>
     </section>
+
+    <aside id="inspector">
+      <header>
+        <span>harness events</span>
+        <span id="count"></span>
+        <span class="spacer"></span>
+        <button id="clearEvents" class="small">Clear</button>
+      </header>
+      <div id="runs"></div>
+      <div id="events"><div id="empty">Nothing yet. Every workflow, model turn, tool call and approval lands here as it happens.</div></div>
+    </aside>
   </main>
 
 <script>
@@ -166,11 +305,76 @@ const log = document.getElementById("logInner");
 const scroller = document.getElementById("log");
 const input = document.getElementById("input");
 const sendBtn = document.getElementById("send");
-const status = document.getElementById("status");
-let busy = false;
+const statusPill = document.getElementById("status");
+const eventsPane = document.getElementById("events");
+const runsPane = document.getElementById("runs");
+const countLabel = document.getElementById("count");
+const inspector = document.getElementById("inspector");
+const resumeBtn = document.getElementById("resume");
+const crashBox = document.getElementById("crash");
 
-// Every node is built with textContent, never innerHTML: the text on this page
-// comes from a model and from tool output, and neither is trusted markup.
+let busy = false;
+let workflow = null;      // the run this browser last touched
+let activityRow = null;   // the live "what is it doing" line, while a turn runs
+let eventCount = 0;
+
+// ---------------------------------------------------------------- markdown
+//
+// The teacher answers in markdown — headings, bold corrections, bullet lists —
+// and showing that as raw asterisks throws away half of what it said.
+//
+// Everything is HTML-escaped FIRST and only the tags we generate ourselves are
+// added afterwards, so model output still cannot inject markup. That order is
+// the whole safety argument: escape, then decorate.
+const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+function inline(s) {
+  return esc(s)
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|[\s(])\*([^*\n]+)\*/g, "$1<em>$2</em>")
+    .replace(/(^|[\s(])_([^_\n]+)_/g, "$1<em>$2</em>")
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g,
+             '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
+}
+
+function markdown(src) {
+  const lines = (src || "").replace(/\r\n/g, "\n").split("\n");
+  const out = [];
+  let list = null, fence = null;
+  const closeList = () => { if (list) { out.push("</" + list + ">"); list = null; } };
+  const openList = (kind) => { if (list !== kind) { closeList(); out.push("<" + kind + ">"); list = kind; } };
+
+  for (const line of lines) {
+    if (line.trim().startsWith("```")) {
+      if (fence) { out.push("<pre><code>" + esc(fence.join("\n")) + "</code></pre>"); fence = null; }
+      else { closeList(); fence = []; }
+      continue;
+    }
+    if (fence) { fence.push(line); continue; }
+    if (!line.trim()) { closeList(); continue; }
+
+    const heading = line.match(/^(#{1,4})\s+(.*)$/);
+    if (heading) {
+      closeList();
+      const level = Math.min(heading[1].length + 2, 6);
+      out.push("<h" + level + ">" + inline(heading[2]) + "</h" + level + ">");
+      continue;
+    }
+    const bullet = line.match(/^\s*[-*+]\s+(.*)$/);
+    if (bullet) { openList("ul"); out.push("<li>" + inline(bullet[1]) + "</li>"); continue; }
+    const numbered = line.match(/^\s*\d+[.)]\s+(.*)$/);
+    if (numbered) { openList("ol"); out.push("<li>" + inline(numbered[1]) + "</li>"); continue; }
+    // A wrapped line inside a list item belongs to that item, not to a new one.
+    if (list) { out[out.length - 1] = out[out.length - 1].replace(/<\/li>$/, "<br>" + inline(line.trim()) + "</li>"); continue; }
+    out.push("<p>" + inline(line) + "</p>");
+  }
+  if (fence) out.push("<pre><code>" + esc(fence.join("\n")) + "</code></pre>");
+  closeList();
+  return out.join("");
+}
+
+// ---------------------------------------------------------------- chat log
 function el(tag, className, text) {
   const node = document.createElement(tag);
   if (className) node.className = className;
@@ -185,12 +389,15 @@ function add(node) {
   return node;
 }
 
-function message(role, text) {
-  return add(el("div", "msg " + role, text));
-}
+function message(role, text) { return add(el("div", "msg " + role, text)); }
+function notice(text) { return add(el("div", "notice", text)); }
 
-function notice(text) {
-  return add(el("div", "notice", text));
+function answer(text) {
+  const box = el("div", "msg agent");
+  const body = el("div", "md");
+  body.innerHTML = markdown(text);   // escaped above; only our own tags remain
+  box.appendChild(body);
+  return add(box);
 }
 
 function oneLine(s, max) {
@@ -232,49 +439,166 @@ function approval(ev) {
       body: JSON.stringify({ id: ev.id, approved: approved }),
     });
     buttons.replaceWith(el("div", "verdict",
-      !res.ok ? "no longer waiting for an answer" :
-      approved ? "approved" : "denied"));
+      !res.ok ? "no longer waiting for an answer" : approved ? "approved" : "denied"));
   }
   yes.onclick = () => decide(true);
   no.onclick = () => decide(false);
 }
 
-function handle(ev) {
-  switch (ev.type) {
-    case "tool": toolCall(ev); break;
-    case "approval": approval(ev); break;
-    case "compact": notice("history compacted — " + oneLine(ev.text, 120)); break;
-    case "answer": message("agent", ev.text); break;
-    // Not an error: nobody answered the approval card, so the run parked itself
-    // on disk. Nothing is running and nothing is lost — the decision can be
-    // made from the terminal whenever, and the run picks up where it stopped.
-    case "suspended":
-      notice("waiting for a human — " + oneLine(ev.text, 120));
-      notice("approve it with:  go run . -approve " + ev.id);
-      break;
-    case "error": message("error", ev.text); break;
+// ------------------------------------------------------------- the inspector
+const GLYPH = {
+  "workflow.started": "▶", "workflow.resumed": "⟲", "workflow.completed": "✔",
+  "workflow.failed": "✘", "workflow.suspended": "⏸",
+  "model.completed": "▪", "tool.requested": "⚙", "tool.completed": "✓",
+  "step.completed": "▪", "step.cached": "⏩", "memory.compacted": "🗜",
+  "agent.handoff": "↪", "plan.created": "🗺",
+  "subagent.started": "├", "subagent.completed": "✓", "subagent.failed": "✘",
+  "approval.requested": "✋", "approval.resolved": "🖊",
+};
+const TONE = {
+  "workflow.started": "blue", "workflow.resumed": "violet", "workflow.completed": "green",
+  "workflow.failed": "red", "workflow.suspended": "amber",
+  "tool.requested": "amber", "tool.completed": "green",
+  "step.cached": "violet", "memory.compacted": "violet", "agent.handoff": "violet",
+  "plan.created": "blue", "subagent.started": "blue",
+  "subagent.completed": "green", "subagent.failed": "red",
+  "approval.requested": "amber", "approval.resolved": "violet",
+};
+
+// What the spinner says. An indicator that only ever says "thinking" hides the
+// interesting half of a turn — a handoff, a compaction, a replayed step — all
+// of which are already on the stream.
+function activityLabel(h) {
+  switch (h.type) {
+    case "workflow.started":   return "starting the workflow…";
+    case "workflow.resumed":   return "replaying completed steps…";
+    case "step.cached":        return "replaying " + (h.name || "a step") + " from the checkpoint…";
+    case "tool.requested":     return "calling " + h.name + "…";
+    case "tool.completed":     return h.name + " came back…";
+    case "model.completed":    return "the model answered — deciding what to do next…";
+    case "memory.compacted":   return "compacting older turns into a summary…";
+    case "agent.handoff":      return "handing off: " + h.from + " → " + h.to + "…";
+    case "plan.created":       return "plan ready — dispatching investigators…";
+    case "subagent.started":   return 'investigator "' + h.name + '" working…';
+    case "subagent.completed": return 'investigator "' + h.name + '" reported back…';
+    case "subagent.failed":    return 'investigator "' + h.name + '" failed — carrying on…';
+    case "approval.requested": return "waiting for a human decision…";
+    case "approval.resolved":  return "decision recorded — continuing…";
+    default:                   return null;   // leave the line saying whatever it said
   }
+}
+
+function eventSummary(h) {
+  if (h.type === "agent.handoff") return h.from + " → " + h.to;
+  if (h.name) return h.name;
+  if (h.text) return oneLine(h.text, 60);
+  if (h.error) return oneLine(h.error, 60);
+  return "";
+}
+
+function renderEvent(h) {
+  const empty = document.getElementById("empty");
+  if (empty) empty.remove();
+
+  const row = el("div", "event " + (TONE[h.type] || "grey"));
+  row.appendChild(el("span", "glyph", GLYPH[h.type] || "·"));
+  row.appendChild(el("span", "etype", h.type));
+  const summary = eventSummary(h);
+  if (summary) row.appendChild(el("span", "esummary", summary));
+  row.appendChild(el("span", "fill"));
+  if (h.ts) row.appendChild(el("span", "ets", h.ts));
+
+  // Click for everything: the same JSON line the log holds, which is where the
+  // arguments, the workflow id and the call id actually live.
+  let detail = null;
+  row.onclick = () => {
+    if (detail) { detail.remove(); detail = null; return; }
+    detail = el("pre", "edetail", JSON.stringify(h, null, 2));
+    row.appendChild(detail);
+  };
+
+  const pinned = eventsPane.scrollHeight - eventsPane.scrollTop - eventsPane.clientHeight < 60;
+  eventsPane.appendChild(row);
+  if (pinned) eventsPane.scrollTop = eventsPane.scrollHeight;
+
+  countLabel.textContent = ++eventCount;
+}
+
+// ------------------------------------------------------------------ status
+function setStatus(state, label) {
+  statusPill.className = state;
+  statusPill.textContent = label || state;
 }
 
 function setBusy(on) {
   busy = on;
   sendBtn.disabled = on;
-  status.textContent = on ? "thinking…" : "";
+  if (on) {
+    setStatus("working", "working");
+    activityRow = add(el("div", null));
+    activityRow.id = "activity";
+    activityRow.appendChild(el("span", "spin"));
+    activityRow.appendChild(el("span", "label", "thinking…"));
+  } else if (activityRow) {
+    activityRow.remove();
+    activityRow = null;
+  }
+  refreshRuns();
 }
 
-// One turn is one streaming response. Events are newline-delimited "data:"
-// lines, so they are parsed here rather than with EventSource, which cannot
-// POST the question in the first place.
-async function ask(text) {
+function setActivity(text) {
+  if (activityRow) activityRow.querySelector(".label").textContent = text;
+}
+
+// ------------------------------------------------------------------ events
+function handle(ev) {
+  switch (ev.type) {
+    case "harness": {
+      const h = ev.harness;
+      renderEvent(h);
+      if (h.workflow) workflow = h.workflow;
+      const label = activityLabel(h);
+      if (label) setActivity(label);
+      break;
+    }
+    case "status":
+      if (ev.text === "crashed") {
+        setStatus("crashed", "crashed");
+        notice("the process died mid-workflow (simulated) — press Resume and watch the completed steps replay");
+      } else if (ev.text === "recovering") {
+        setStatus("recovering", "recovering");
+      }
+      break;
+    case "tool": toolCall(ev); break;
+    case "approval": approval(ev); setStatus("parked", "awaiting you"); break;
+    case "compact": notice("history compacted — " + oneLine(ev.text, 120)); break;
+    case "answer": answer(ev.text); setStatus("done", "done"); break;
+    // Not an error: nobody answered the approval card, so the run parked itself
+    // on disk. Nothing is running and nothing is lost — the decision can be
+    // made here or from the terminal, and Resume picks the run back up.
+    case "suspended":
+      setStatus("parked", "parked");
+      notice("waiting for a human — " + oneLine(ev.text, 120));
+      notice("decide here, or from the terminal:  go run . -approve " + ev.id);
+      break;
+    case "error": message("error", ev.text); setStatus("failed", "failed"); break;
+  }
+}
+
+// One turn is one streaming response — a question or a resume, both shaped the
+// same. Events are newline-delimited "data:" lines, so they are parsed here
+// rather than with EventSource, which cannot POST in the first place.
+async function stream(url, body) {
   setBusy(true);
   try {
-    const res = await fetch("/api/chat", {
+    const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: text }),
+      body: JSON.stringify(body),
     });
     if (!res.ok) {
       message("error", (await res.text()).trim() || ("request failed: " + res.status));
+      setStatus("failed", "failed");
       return;
     }
 
@@ -296,11 +620,50 @@ async function ask(text) {
     }
   } catch (err) {
     message("error", "connection lost: " + err.message);
+    setStatus("failed", "failed");
   } finally {
     setBusy(false);
   }
 }
 
+// -------------------------------------------------------------- the runtime
+//
+// What the harness is holding, refreshed after anything that could change it.
+// A parked run is the row that matters: it is a question addressed to a human,
+// and it costs nothing to sit there until someone answers it.
+async function refreshRuns() {
+  let rows = [];
+  try {
+    const res = await fetch("/api/workflows");
+    if (res.ok) rows = await res.json();
+  } catch { /* the list is a convenience; failing to get it must not break the page */ }
+
+  runsPane.replaceChildren();
+  for (const wf of rows.slice(0, 8)) {
+    const row = el("div", "run" + (wf.waiting ? " parked" : ""));
+    row.appendChild(el("span", "id", wf.id));
+    row.appendChild(el("span", "st", wf.status));
+    row.appendChild(el("span", "task", wf.waiting ? "waiting: " + wf.waiting : (wf.input || "")));
+    // "done" is finished; running, suspended and failed can all be picked up.
+    if (wf.status !== "done") {
+      const go = el("button", "small", "Resume");
+      go.disabled = busy;
+      go.onclick = () => resume(wf.id);
+      row.appendChild(go);
+    }
+    runsPane.appendChild(row);
+  }
+  resumeBtn.disabled = busy || (!workflow && !rows.some((w) => w.status !== "done"));
+}
+
+async function resume(id) {
+  if (busy) return;
+  const target = id || workflow || "";
+  notice("resuming " + (target || "the last run") + " — completed steps replay from the checkpoint, and are not paid for twice");
+  await stream("/api/resume", { id: target });
+}
+
+// ------------------------------------------------------------------- wiring
 document.getElementById("composer").onsubmit = (e) => {
   e.preventDefault();
   const text = input.value.trim();
@@ -308,7 +671,9 @@ document.getElementById("composer").onsubmit = (e) => {
   message("you", text);
   input.value = "";
   input.style.height = "auto";
-  ask(text);
+  const crashAfter = crashBox.checked ? 1 : 0;
+  crashBox.checked = false;   // one crash per request, deliberately
+  stream("/api/chat", { message: text, crash_after: crashAfter });
 };
 
 input.addEventListener("keydown", (e) => {
@@ -323,15 +688,46 @@ input.addEventListener("input", () => {
   input.style.height = Math.min(input.scrollHeight, 200) + "px";
 });
 
+resumeBtn.onclick = () => resume(workflow);
+
 document.getElementById("reset").onclick = async () => {
   if (busy) return;
   const res = await fetch("/api/reset", { method: "POST" });
   if (!res.ok) { message("error", (await res.text()).trim()); return; }
   log.replaceChildren();
+  workflow = null;
+  setStatus("idle", "idle");
   notice("new conversation — the agent has forgotten everything above");
 };
 
-notice("Paste text to have it corrected, or ask about a rule. Anything that would change your machine stops here for your approval first.");
+document.getElementById("clear").onclick = async () => {
+  if (busy) return;
+  if (!confirm("Delete every workflow, pending approval and event on disk?\n\nA parked run is a question waiting for you; clearing it means it has to be asked again.")) return;
+  const res = await fetch("/api/clear", { method: "POST" });
+  if (!res.ok) { message("error", (await res.text()).trim() || "could not clear the state"); return; }
+  eventsPane.replaceChildren();
+  eventCount = 0;
+  countLabel.textContent = "";
+  workflow = null;
+  setStatus("idle", "idle");
+  notice("harness state cleared — .harness/ is empty");
+  refreshRuns();
+};
+
+document.getElementById("clearEvents").onclick = () => {
+  eventsPane.replaceChildren();
+  eventCount = 0;
+  countLabel.textContent = "";
+};
+
+document.getElementById("toggleInspector").onclick = (e) => {
+  const hidden = inspector.hasAttribute("hidden");
+  if (hidden) inspector.removeAttribute("hidden"); else inspector.setAttribute("hidden", "");
+  e.target.textContent = hidden ? "Hide events" : "Show events";
+};
+
+notice("Paste text to have it corrected, or ask about a rule. Every harness event lands on the right — click a row for its full JSON.");
+refreshRuns();
 </script>
 </body>
 </html>

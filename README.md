@@ -468,6 +468,7 @@ Two details that are easy to get wrong and worth stating:
 | 5 | Run code in a sandbox | `RunCode` + the tool bridge — `tools/code.go`, `sandbox/` |
 | 6 | Human-in-the-loop before danger | the `Approver` port every sensitive tool takes — `tools/tools.go`, `ui/console.go`, `web/session.go`; made durable by `approval/` |
 | 7 | Eval suite | `tools/*_test.go` + `agent/eval*_test.go` + `evalscore/` (relevancy) + `evals/` (Braintrust) |
+| 8 | See the harness while it runs | the inspector pane — `web/index.html`, `web.Session` on the event bus |
 | 9 | Check that nothing ran twice | `events.Audit` + `go run . -audit` |
 
 ## Beyond the basics
@@ -543,9 +544,10 @@ The model never runs code itself — it only *asks*. A dangerous tool first call
 go run . -http :8080     # then open http://localhost:8080
 ```
 
-One page, embedded in the binary with `go:embed` — no build step and no CDN.
-`web.Session` is to the browser what `ui.Console` is to the terminal: it is the
-approver the tools ask, and the hooks the agent reports progress to.
+One page, embedded in the binary with `go:embed` — no build step, no CDN, no
+`node_modules`. `web.Session` is to the browser what `ui.Console` is to the
+terminal: it is the approver the tools ask, the sink the harness reports to, and
+the hooks the agent streams progress through.
 
 - **The inspector.** Every harness event, live, on the right: glyphed and
   coloured by kind, click any row for the full JSON — arguments, workflow id,
@@ -641,7 +643,11 @@ go test ./... -short     # fast, offline, deterministic (no key, no network)
   streams its tool calls and ends with the answer, a failed turn streams the
   error, an approval blocks the tool until the click and hands back exactly what
   was clicked, a stale or unwatched approval denies, an overlapping question is
-  refused, and browsers don't share a history but follow-ups do.
+  refused, and browsers don't share a history but follow-ups do. The session-6
+  half too: every harness event reaches the browser in order, the crash switch
+  stops a turn without producing an answer and does not leak into the next one,
+  resume drives the recovery pass and says so, and the runtime controls degrade
+  to a 501 rather than a 500 when a build does not wire them.
 - **`tools` package** — unit evals: a gated tool acts only on a yes and does
   nothing on a no, a read-only tool never reaches the human, unknown tool
   handled, live web search, and the least-privilege seams — a sensitive tool

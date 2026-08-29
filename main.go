@@ -286,7 +286,12 @@ func serveWeb(addr string, client *openrouter.OpenRouter) {
 
 	stream := bus(os.Stdout, false)
 	err := web.ListenAndServe(addr, func(session *web.Session) web.Assistant {
-		assistant, _, err := harness(client, &approverOf{live: session}, stream)
+		// The session joins the bus. Every harness event this agent produces
+		// therefore reaches three places at once — the terminal, the JSONL log,
+		// and the browser's inspector pane — and none of them is a summary of
+		// the others.
+		assistant, _, err := harness(client, &approverOf{live: session},
+			events.Bus{stream, session})
 		if err != nil {
 			fmt.Println("error:", err)
 			os.Exit(1)
@@ -294,11 +299,56 @@ func serveWeb(addr string, client *openrouter.OpenRouter) {
 		assistant.OnToolCall = session.LogTool
 		assistant.OnCompact = session.LogCompact
 		return assistant
-	})
+	},
+		web.WithWorkflows(webWorkflows),
+		web.WithReset(clearHarness),
+	)
 	if err != nil {
 		fmt.Println("error:", err)
 		os.Exit(1)
 	}
+}
+
+// webWorkflows is `-list` for the browser: what the runtime is holding, and
+// what each parked run is waiting on.
+func webWorkflows() ([]web.Workflow, error) {
+	store, err := durable.NewStore(harnessPath("wf"), nil)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := store.List()
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]web.Workflow, 0, len(rows))
+	for _, row := range rows {
+		wf := web.Workflow{
+			ID: row.ID, Status: string(row.Status), Agent: row.Agent,
+			Steps: row.Steps, Input: row.Input,
+		}
+		if pending, ok := approval.Waiting(harnessPath("decisions"), row.ID); ok {
+			wf.Waiting = pending.Action
+		}
+		out = append(out, wf)
+	}
+	return out, nil
+}
+
+// clearHarness is `rm -rf .harness` as a button: workflows, decisions and the
+// event log, gone. Everything in there is rebuildable by definition — that is
+// what made keeping it in plain files worth doing — but a parked approval is
+// rebuildable only by asking the human again, which is why the page asks first.
+func clearHarness() error {
+	for _, dir := range []string{harnessPath("wf"), harnessPath("decisions"), harnessPath("sandbox")} {
+		if err := os.RemoveAll(dir); err != nil {
+			return err
+		}
+	}
+	// RemoveAll rather than Remove: a state that was already clear is not an
+	// error. The log is reopened per write, so deleting it mid-process simply
+	// starts a new one on the next event.
+	return os.RemoveAll(harnessPath("events.jsonl"))
 }
 
 // decide is the human side of Part 7: record a verdict for a parked workflow,

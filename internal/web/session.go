@@ -5,6 +5,9 @@ import (
 	"errors"
 	"sync"
 	"time"
+
+	"github.com/aliworkshop/ai-engineering-course/internal/durable"
+	"github.com/aliworkshop/ai-engineering-course/internal/events"
 )
 
 // approvalTimeout is how long a gated tool waits for the human to click before
@@ -41,6 +44,16 @@ type Session struct {
 	pmu     sync.Mutex
 	pending map[string]chan bool
 
+	// run holds what the turn currently in flight is doing. Like stream and
+	// ctx it belongs to the turn's goroutine, except workflow, which a later
+	// request reads to resume — hence the mutex on that one alone.
+	crashAfter int    // cancel the turn after this many tools complete; 0 = never
+	completed  int    // tools finished so far this turn
+	crash      func() // cancels the turn, standing in for the process dying
+
+	wmu      sync.Mutex
+	workflow string // the run this session last touched
+
 	// lastSeen is guarded by Server.mu, not by anything here.
 	lastSeen time.Time
 }
@@ -64,6 +77,12 @@ func newSession(newAssistant NewAssistant) *Session {
 func (s *Session) begin(ctx context.Context, stream *sseWriter) {
 	s.ctx = ctx
 	s.stream = stream
+
+	// Every turn starts disarmed. The crash switch is per-request — arming it
+	// once and leaving it set meant the resume of a crashed run crashed itself
+	// on its first replayed tool, which is a demo that proves the opposite of
+	// what it is for.
+	s.crashAfter, s.crash, s.completed = 0, nil, 0
 }
 
 func (s *Session) end() {
@@ -163,4 +182,74 @@ func (s *Session) LogTool(name, args, result string) {
 
 func (s *Session) LogCompact(summary string) {
 	_ = s.emit(event{Type: "compact", Text: summary})
+}
+
+// Emit implements events.Emitter: every harness event this session's agent
+// produces is forwarded to the browser watching it, and nothing is filtered.
+// The page's inspector pane is then the same stream the terminal renders, which
+// is the point of having made everything an event in the first place.
+//
+// It is also where the two demo affordances live, both of which are the web
+// layer's business rather than the harness's:
+//
+//   - the workflow id is remembered, so "Resume" is a button rather than an id
+//     copied out of a log;
+//   - the crash switch pulls the context once enough tools have completed.
+//     Nothing in the harness knows it exists, because from a workflow's side a
+//     cancelled context is exactly what a dying process looks like.
+func (s *Session) Emit(e events.Event) {
+	if e.Workflow != "" {
+		s.wmu.Lock()
+		s.workflow = e.Workflow
+		s.wmu.Unlock()
+	}
+
+	_ = s.emit(event{Type: "harness", Harness: &e})
+
+	if e.Type == events.ToolCompleted && s.crashAfter > 0 {
+		s.completed++
+		if s.completed >= s.crashAfter && s.crash != nil {
+			s.emitStatus("crashed")
+			s.crash()
+		}
+	}
+}
+
+// Workflow reports the run this session last touched, for the resume route.
+func (s *Session) Workflow() string {
+	s.wmu.Lock()
+	defer s.wmu.Unlock()
+	return s.workflow
+}
+
+func (s *Session) emitStatus(state string) { _ = s.emit(event{Type: "status", Text: state}) }
+
+// arm sets up the crash switch for the turn that is starting — begin has
+// already cleared it, so this only ever turns it on.
+func (s *Session) arm(after int, cancel func()) {
+	if after <= 0 {
+		return
+	}
+	s.crashAfter, s.crash, s.completed = after, cancel, 0
+}
+
+// report turns whatever a turn returned into the last event the page sees.
+//
+// A parked workflow is not an error the user should be shown as one: nothing
+// broke, a decision is outstanding, and the run is safe on disk until someone
+// makes it. A cancelled context is not one either — that is the crash switch
+// doing exactly what it was asked to.
+func (s *Session) report(answer string, err error) {
+	switch {
+	case err == nil:
+		s.emit(event{Type: "answer", Text: answer})
+	case errors.Is(err, context.Canceled):
+		s.emit(event{Type: "error", Text: "the run stopped mid-workflow — Resume picks it up where it died"})
+	default:
+		if parked, ok := durable.IsSuspended(err); ok {
+			s.emit(event{Type: "suspended", Text: parked.Reason, ID: parked.ID})
+			return
+		}
+		s.emit(event{Type: "error", Text: err.Error()})
+	}
 }
