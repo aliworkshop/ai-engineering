@@ -17,8 +17,8 @@ import (
 // It is not gated by the Approver, and that is the deal it strikes: it may run
 // arbitrary code, but only with tools that cannot change anything, in a
 // throwaway directory, with the environment stripped and a timer running. The
-// tools that *do* change things stay on run_command and the file tools, where a
-// human still sees them one at a time.
+// tools that *do* change things stay on the file tools, where a human still
+// sees them one at a time.
 type RunCode struct {
 	// Scratch is where each run's disposable directory is created.
 	Scratch string

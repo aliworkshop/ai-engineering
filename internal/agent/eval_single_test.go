@@ -64,7 +64,7 @@ func TestEvalToolSelection(t *testing.T) {
 		{"Read the contents of go.mod", []string{"read_file"}, map[string]string{"path": "go.mod"}},
 		{"Create hello.txt containing 'hi'", []string{"write_file"}, map[string]string{"path": "hello.txt", "content": "hi"}},
 		{"Delete the file /tmp/old.log", []string{"delete_file"}, map[string]string{"path": "old.log"}},
-		{"Run the command `ls -la` and show me the output", []string{"run_command"}, map[string]string{"command": "ls -la"}},
+		{"What is 17 * 23?", nil, nil}, // negative: arithmetic, no tool
 		{"Who is the current Prime Minister of the UK?", []string{"openrouter_web_search"}, nil},
 		{"What's the weather like in Tokyo right now?", []string{"get_weather"}, map[string]string{"location": "Tokyo"}},
 		{"How windy is it in Chicago at the moment?", []string{"get_weather"}, map[string]string{"location": "Chicago"}},

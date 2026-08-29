@@ -202,7 +202,7 @@ qualifies is least privilege.
 ```
 assistant  read_file · get_weather · openrouter_web_search · run_code ·
            investigate · handoff
-operator   read_file · write_file · edit_file · delete_file · run_command · run_code
+operator   read_file · write_file · edit_file · delete_file · run_code
 ```
 
 The assistant cannot be *talked into* deleting a file, because there is no
@@ -303,9 +303,9 @@ Two details that are easy to get wrong and worth stating:
 |---|---|---|
 | 1 | Answer from own knowledge (no tool) | `agent.SystemPrompt` + loop returns when there are no tool calls — `agent/agent.go` |
 | 2 | Search the web | `NativeWebSearch` — OpenRouter's own `web` plugin — `tools/nativesearch.go` |
-| 3 | Write scripts and run them | `WriteFile` + `RunCommand` + `ReadFile` — `tools/files.go`, `tools/shell.go` |
+| 3 | Write files and read them back | `WriteFile` + `ReadFile` — `tools/files.go` |
 | 4 | Edit existing files | `ReadFile` + `EditFile` — `tools/files.go` |
-| 5 | Human-in-the-loop before danger | `Approver` gate on write/edit/delete/run — `tools/*.go`, `ui/console.go`, `web/session.go`; made durable by `approval/` |
+| 5 | Human-in-the-loop before danger | `Approver` gate on write/edit/delete — `tools/*.go`, `ui/console.go`, `web/session.go`; made durable by `approval/` |
 | 6 | Eval suite | `tools/tools_test.go` + `agent/eval_test.go` + `agent/eval_single_test.go` |
 
 ## Beyond the six
@@ -417,7 +417,7 @@ go test ./... -short     # fast, offline, deterministic (no key, no network)
   error, an approval blocks the tool until the click and hands back exactly what
   was clicked, a stale or unwatched approval denies, an overlapping question is
   refused, and browsers don't share a history but follow-ups do.
-- **`tools` package** — unit evals: script roundtrip, edit, denial blocks the
+- **`tools` package** — unit evals: write/read roundtrip, edit, denial blocks the
   action, read-only tools never prompt, unknown tool handled, live web search,
   and the least-privilege seams — every dangerous tool declares itself
   sensitive, sandboxed code never sees one, and a restricted subset cannot

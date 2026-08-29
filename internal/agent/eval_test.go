@@ -5,7 +5,7 @@ package agent
 // Where the tools package unit-tests each tool deterministically, this runs
 // whole tasks through the REAL agent loop and grades the outcome: did it answer
 // without a tool when it should, reach for openrouter_web_search when it needed
-// facts, actually create+run a script, edit a file, and respect a "no"?
+// facts, actually write a file, edit one, and respect a "no"?
 //
 // Run:  go test ./internal/agent -run Eval -v
 // (needs OPENROUTER_API_KEY; skipped with -short)
@@ -54,8 +54,7 @@ func TestEvalAgentBehavior(t *testing.T) {
 	client := llm.NewOpenRouter(key)
 
 	dir := t.TempDir()
-	script := filepath.Join(dir, "greet.sh")
-	scriptOut := filepath.Join(dir, "greet.out")
+	written := filepath.Join(dir, "greet.out")
 	editable := filepath.Join(dir, "config.txt")
 	os.WriteFile(editable, []byte("mode = dark\n"), 0o644)
 	blocked := filepath.Join(dir, "blocked.txt")
@@ -73,12 +72,13 @@ func TestEvalAgentBehavior(t *testing.T) {
 			mustUseTool: "openrouter_web_search",
 		},
 		{
-			name:      "write+run+read script",
-			prompt:    "Create a shell script at " + script + " that writes the text HELLO_EVAL into " + scriptOut + ", then run it, then read " + scriptOut + " and tell me what it contains.",
-			approve:   true,
-			answerHas: "HELLO_EVAL",
+			name:        "write+read file",
+			prompt:      "Create a file at " + written + " containing the text HELLO_EVAL, then read it back and tell me what it contains.",
+			approve:     true,
+			mustUseTool: "write_file",
+			answerHas:   "HELLO_EVAL",
 			check: func(t *testing.T) bool {
-				b, err := os.ReadFile(scriptOut)
+				b, err := os.ReadFile(written)
 				return err == nil && strings.Contains(string(b), "HELLO_EVAL")
 			},
 		},

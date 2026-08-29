@@ -47,8 +47,8 @@ func WithOpenRouterSearch(client *openrouter.OpenRouter, model string) Option {
 // It is opt-in rather than always-on because it changes how the agent solves
 // things: given run_code, a model will often write one program where it would
 // otherwise have made four tool calls. That is the win, but a test that asserts
-// "this task must use run_command" wants the old shape, and should not have to
-// be rewritten to keep passing.
+// a task must use the plain file tools wants the old shape, and should not have
+// to be rewritten to keep passing.
 func WithSandbox(dir string) Option {
 	return func(s *settings) { s.sandboxDir = dir }
 }
@@ -98,7 +98,6 @@ func Default(approver Approver, opts ...Option) *Registry {
 		WriteFile{Approver: approver},
 		EditFile{Approver: approver},
 		DeleteFile{Approver: approver},
-		RunCommand{Approver: approver},
 	)
 
 	registry := NewRegistry(list...)

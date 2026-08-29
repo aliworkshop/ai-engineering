@@ -49,8 +49,7 @@ func TestBehaviorEval(t *testing.T) {
 	// nothing collides, and keeping them in one place means the side-effect
 	// checks can look at what an earlier case wrote.
 	dir := t.TempDir()
-	script := filepath.Join(dir, "greet.sh")
-	scriptOut := filepath.Join(dir, "greet.out")
+	written := filepath.Join(dir, "greet.out")
 	editable := filepath.Join(dir, "config.txt")
 	blocked := filepath.Join(dir, "blocked.txt")
 
@@ -62,8 +61,8 @@ func TestBehaviorEval(t *testing.T) {
 	// thing about a task that was supposed to change something — these are what
 	// catch an agent that says it wrote the file and didn't.
 	checks := map[string]func() bool{
-		"script-ran": func() bool {
-			b, err := os.ReadFile(scriptOut)
+		"file-written": func() bool {
+			b, err := os.ReadFile(written)
 			return err == nil && strings.Contains(string(b), "HELLO_EVAL")
 		},
 		"file-edited": func() bool {
@@ -94,13 +93,14 @@ func TestBehaviorEval(t *testing.T) {
 		},
 		{
 			Input: behaviorInput{
-				Prompt: "Create a shell script at " + script + " that writes the text HELLO_EVAL into " +
-					scriptOut + ", then run it, then read " + scriptOut + " and tell me what it contains.",
+				Prompt: "Create a file at " + written + " containing the text HELLO_EVAL, " +
+					"then read it back and tell me what it contains.",
 				Approve:   true,
+				MustUse:   "write_file",
 				AnswerHas: "HELLO_EVAL",
-				Check:     "script-ran",
+				Check:     "file-written",
 			},
-			Tags: []string{"write", "run", "read"},
+			Tags: []string{"write", "read"},
 		},
 		{
 			Input: behaviorInput{

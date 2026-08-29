@@ -33,27 +33,20 @@ func jsonArgs(t *testing.T, m map[string]any) string {
 	return string(b)
 }
 
-// Requirement 3: write a script to disk, run it, read back the result.
-func TestWriteRunReadRoundtrip(t *testing.T) {
+// Requirement 3: write a file to disk, read back what landed there.
+func TestWriteReadRoundtrip(t *testing.T) {
 	reg := Default(approve(true))
 	ctx := context.Background()
-	dir := t.TempDir()
-	script := filepath.Join(dir, "hello.sh")
-	result := filepath.Join(dir, "result.txt")
+	path := filepath.Join(t.TempDir(), "result.txt")
 
 	if got := reg.Dispatch(ctx, "write_file", jsonArgs(t, map[string]any{
-		"path":    script,
-		"content": "#!/bin/sh\necho 'agent works' > " + result + "\n",
+		"path":    path,
+		"content": "agent works\n",
 	})); !strings.Contains(got, "Wrote") {
 		t.Fatalf("write_file: %q", got)
 	}
-	if got := reg.Dispatch(ctx, "run_command", jsonArgs(t, map[string]any{
-		"command": "sh " + script,
-	})); strings.Contains(got, "exit error") {
-		t.Fatalf("run_command failed: %q", got)
-	}
 	if got := reg.Dispatch(ctx, "read_file", jsonArgs(t, map[string]any{
-		"path": result,
+		"path": path,
 	})); !strings.Contains(got, "agent works") {
 		t.Fatalf("read_file got %q, want it to contain 'agent works'", got)
 	}
@@ -91,10 +84,15 @@ func TestHumanInLoopDenies(t *testing.T) {
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("file was written despite denial")
 	}
-	if got := reg.Dispatch(ctx, "run_command", jsonArgs(t, map[string]any{
-		"command": "touch " + filepath.Join(dir, "x"),
+	keep := filepath.Join(dir, "keep.txt")
+	os.WriteFile(keep, []byte("still here"), 0o644)
+	if got := reg.Dispatch(ctx, "delete_file", jsonArgs(t, map[string]any{
+		"path": keep,
 	})); !strings.Contains(got, "Denied") {
-		t.Fatalf("run_command should have been denied, got %q", got)
+		t.Fatalf("delete_file should have been denied, got %q", got)
+	}
+	if _, err := os.Stat(keep); err != nil {
+		t.Fatalf("file was deleted despite denial")
 	}
 }
 

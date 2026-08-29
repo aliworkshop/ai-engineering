@@ -22,7 +22,7 @@ func TestSensitiveToolsAreDeclared(t *testing.T) {
 	registry := Default(yes{})
 
 	dangerous := map[string]bool{
-		"write_file": true, "edit_file": true, "delete_file": true, "run_command": true,
+		"write_file": true, "edit_file": true, "delete_file": true,
 	}
 	safe := map[string]bool{"read_file": true, "get_weather": true}
 
@@ -81,7 +81,7 @@ func TestSubsetIsLeastPrivilege(t *testing.T) {
 	if len(assistant.Names()) != 2 {
 		t.Fatalf("subset holds %v, want exactly the two named", assistant.Names())
 	}
-	for _, forbidden := range []string{"write_file", "delete_file", "run_command"} {
+	for _, forbidden := range []string{"write_file", "edit_file", "delete_file"} {
 		if assistant.Has(forbidden) {
 			t.Fatalf("%s leaked into the restricted subset", forbidden)
 		}

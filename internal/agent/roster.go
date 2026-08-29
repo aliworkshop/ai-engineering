@@ -46,7 +46,7 @@ const (
 )
 
 // AssistantTools is the generalist's set. Note what is missing: write_file,
-// edit_file, delete_file, run_command. That absence is the whole design.
+// edit_file, delete_file. That absence is the whole design.
 var AssistantTools = []string{
 	"read_file",
 	"get_weather",
@@ -56,7 +56,7 @@ var AssistantTools = []string{
 	"handoff",
 }
 
-// OperatorTools is the specialist's set: the four gated tools, plus the two
+// OperatorTools is the specialist's set: the three gated tools, plus the two
 // read-only ones it needs to do the job properly (read before you edit) and to
 // check its own work.
 var OperatorTools = []string{
@@ -64,7 +64,6 @@ var OperatorTools = []string{
 	"write_file",
 	"edit_file",
 	"delete_file",
-	"run_command",
 	"run_code",
 }
 
@@ -81,7 +80,7 @@ var InvestigatorTools = []string{
 
 const AssistantPurpose = "general questions, research, reading files, and sandboxed code"
 
-const OperatorPurpose = "anything that changes the machine: writing, editing, or deleting files, and running shell commands"
+const OperatorPurpose = "anything that changes the machine: writing, editing, or deleting files"
 
 // AssistantPrompt is the generalist's standing instructions.
 const AssistantPrompt = `You are a helpful command-line assistant with access to tools.
@@ -105,8 +104,7 @@ Rules:
 - Use investigate when a request has several independent parts that each need
   their own digging. It researches them in parallel and reports back. Don't use
   it for a single question you can answer yourself.
-- You CANNOT write, edit, or delete files, and you cannot run shell commands.
-  You do not have those tools. When a task needs one, call handoff with
+- You CANNOT write, edit, or delete files. You do not have those tools. When a task needs one, call handoff with
   to="operator" and a one-sentence description of what must be done. Do not
   describe the change and stop; hand it over. Do not try to do it with
   run_code either — the sandbox is throwaway and cannot touch the user's files.
@@ -126,14 +124,13 @@ and each one asks a human for approval before it runs. Behave accordingly:
   anything that wasn't asked for.
 - To change an existing file: read_file first, then edit_file. Never overwrite a
   file you haven't read.
-- To create and run a script: write_file, then run_command, then read_file to
-  check the result.
+- To create a script: write_file, then read_file to check the result.
 - To delete a file: call delete_file. A human is asked to approve it
   automatically, so do not ask for permission in your reply first. Delete only
   what you were asked to delete, and nothing else.
 - If read_file or edit_file reports a missing file, do NOT conclude it doesn't
-  exist. Locate it with run_command — "find . -name README.md", "ls <dir>" —
-  then retry with the real path.
+  exist. Locate it first — run_code with a bash program that runs
+  "find . -name README.md" or "ls <dir>" works — then retry with the real path.
 - If a human denies an action, do not retry it and do not work around it. Say
   what was refused and stop.
 - When the work is done, summarize what changed in one or two lines.`
@@ -153,10 +150,9 @@ Rules:
 - Don't make up facts. If you don't know, say so.
 - Use openrouter_web_search only when the user needs current, external, or
   unknown facts. It answers with source URLs — keep them in your reply.
-- To create and run a script: write_file, then run_command, then read_file to
-  check the result.
+- To create a script: write_file, then read_file to check the result.
 - To change an existing file: read_file first, then edit_file.
 - If read_file, edit_file, or delete_file reports that a file is missing, do NOT
-  conclude it doesn't exist. First locate it with run_command — e.g.
-  "find . -name README.md" or "ls <dir>" — then retry with the real path.
+  conclude it doesn't exist. First locate it with run_code — a bash program that
+  runs "find . -name README.md" or "ls <dir>" — then retry with the real path.
 - Keep answers short and clear.`
