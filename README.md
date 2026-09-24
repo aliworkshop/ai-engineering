@@ -1,4 +1,4 @@
-# The loop (Go) — a prompt, a tool, and the loop that runs them
+# The loop (Go) — a prompt, a tool, and layers that point inward
 
 > **Branch `session-7`.** Built up from nothing, one step at a time. Two
 > dependencies and nothing clever. The other branches are finished agents:
@@ -6,7 +6,9 @@
 > teacher, `session-1` the loop with tools.
 >
 > **Step 1** was the loop: talk to a model, keep the history. **Step 2** added
-> one tool, and the loop that runs it. **Step 3** is here: a system prompt.
+> one tool, and the loop that runs it. **Step 3** added a system prompt.
+> **Step 4** is here: the same program, in layers that can be replaced one at
+> a time.
 
 An agent is a loop. You type, it goes to a model, the reply comes back, and the
 conversation so far goes out with the next question. Give the model a tool and
@@ -36,30 +38,75 @@ by itself — a tool it holds is not a tool it has to use, and the system prompt
 is what tells it so. And the search was its idea: nothing in this program
 decides *when* to search, it only decides what happens when the model asks.
 
-## What is in it
+## Architecture
+
+Dependencies point inward. The terminal knows the agent; the agent knows an
+abstract tool box; the tools know nothing about either. Nothing inner imports
+anything outer, so each layer can be tested — or replaced — on its own.
 
 ```
-main.go     the REPL, the agent loop, and dispatch
-search.go   the one tool
-go.mod      the OpenRouter SDK, and godotenv for the key
+main.go                    wire the pieces together, then run
+  └── internal/
+        ui/       Console  the REPL. Owns stdin and stdout; nothing else prints
+        agent/    Agent    the loop, the conversation, the system prompt
+        tools/    Registry the Tool interface, and every tool
+        llm/               the one place the OpenRouter client is built
 ```
 
-`main.go`, in reading order:
+`main.go` is now four lines of wiring, outermost last:
 
-0. **`SystemPrompt`** — the standing instructions, seeded as message zero.
-1. **the REPL** — read a line, skip blanks, `exit` quits.
-2. **`turn`** — one question to completion: think, run whatever tools were
-   asked for, think again with the results, stop when a reply has no tool
-   calls. That sentence is the whole agent loop.
-3. **`think`** — one model call: the history plus the tool specs go out, one
-   reply comes back.
-4. **`dispatch`** — runs the tool that was named, and *always* returns a
-   string. A tool that returns an error message lets the model try something
-   else; a tool that crashes takes the conversation with it.
-5. **`text`** — pulls the reply out of the SDK's string-or-array union.
+```go
+client    := llm.NewOpenRouter(apiKey)
+toolbox   := tools.Default(client)
+assistant := agent.New(client, Model, toolbox)
+console   := ui.New(os.Stdin, os.Stdout)
 
-A failed turn rewinds the history to where it started, so a half-written turn —
-a tool request with no result — never survives into the next question.
+console.Run(context.Background(), assistant)
+```
+
+Three seams carry the whole thing:
+
+- **`tools.Tool`** — one capability: `Spec()` describes it to the model,
+  `Run()` does the work. Two methods on one type, so a description cannot
+  drift away from the code it describes. Add a capability by writing one
+  struct and naming it in `tools.Default`; nothing else changes.
+- **`agent.ToolBox`** — what the loop needs from its tools (`Specs`,
+  `Dispatch`), declared in the agent package and satisfied by
+  `tools.Registry`. The loop names no tool anywhere, so it cannot be broken by
+  one.
+- **`agent.Msg`** — the conversation in our own vocabulary, not the SDK's. A
+  turn is a plain Go value: readable in a debugger, buildable in a test,
+  writable to disk later. The SDK's union types live in two translation
+  functions at the boundary.
+
+And one hook. The agent does not print — it calls `OnToolCall` if something is
+listening, and the console decides what that looks like. That is what lets the
+same loop be driven later by a test, a script, or a browser without touching a
+line of it.
+
+## The loop (`internal/agent`)
+
+```go
+for step := 0; step < maxSteps; step++ {
+    reply := think(ctx)                  // history + tool specs out, one reply back
+    history = append(history, reply)
+    if len(reply.ToolCalls) == 0 {
+        return reply.Text                // it answered: done
+    }
+    runTools(ctx, reply.ToolCalls)       // it asked: do the work, append results
+}
+```
+
+Three things the loop owns rather than the model:
+
+- **`maxSteps`** — a model that keeps asking for the same tool otherwise loops
+  until your credit does.
+- **Dispatch always returns a string.** A failure becomes `error: …` in the
+  transcript, so the model can try something else. An error that propagated
+  would end the conversation.
+- **A failed turn rewinds the history** to where it started. A turn appends
+  several messages; a tool call left with no result is a conversation the API
+  refuses on the next question.
 
 ## The system prompt
 
@@ -105,7 +152,7 @@ agent> Narnia is a fictional place from C.S. Lewis's "The Chronicles of
        Narnia". There isn't a current king — it's a fantasy world…
 ```
 
-## The tool (`search.go`)
+## The tool (`internal/tools/search.go`)
 
 `web_search` searches through OpenRouter itself rather than a third-party
 search API, so `OPENROUTER_API_KEY` remains the only key you need.
@@ -128,8 +175,8 @@ Plugins: []components.ChatRequestPlugin{
 
 Three details that are easy to get wrong:
 
-- **The description is the interface.** `searchSpec()` is everything the model
-  knows about the tool. "Use it for current events, prices, releases, and
+- **The description is the interface.** `Spec()` is everything the model knows
+  about the tool. "Use it for current events, prices, releases, and
   anything else you might be out of date on" is what stops it searching for
   `12 * 9`, and it is program text, not a comment.
 - **Ask for the URLs in the prose.** The plugin returns citations as
@@ -151,7 +198,7 @@ purpose, and each one is a session's worth of work:
 | stay affordable in a long chat | **context management** — the history is sent whole and grows forever |
 | survive being killed mid-task | **durable execution** — nothing is written down; a crash loses the conversation |
 | be trusted with anything dangerous | **human-in-the-loop** — no gate, because there is nothing yet to gate |
-| be shown to be working | **evals** — no tests, no scores, nothing but your own reading of the replies |
+| be shown to be working | **evals** — no tests, no scores, nothing but your own reading of the replies. The seams above are what make them cheap to write: a stub `ToolBox` is three lines |
 
 Add them one at a time, and let each earn its place by fixing something you
 have actually felt.
