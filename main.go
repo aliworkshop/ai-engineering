@@ -38,7 +38,7 @@ func main() {
 	// it, the agent that drives the tools, and the console that drives the
 	// agent. Each one knows only the layer beneath it.
 	client := llm.NewOpenRouter(apiKey)
-	toolbox := tools.Default(client)
+	toolbox := tools.Default()
 	assistant := agent.New(client, Model, toolbox)
 	console := ui.New(os.Stdin, os.Stdout)
 
