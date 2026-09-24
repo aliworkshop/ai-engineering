@@ -1,57 +1,63 @@
-# AI Engineering Course — a CLI agent, session by session
+# The loop (Go) — an agent with no prompt and no tools
 
-Each session of the course is a **branch**, not a folder. Every branch has the
-same shape — the agent at the repo root — so switching sessions is:
+> **Branch `session-7`.** The starting point, built up from here step by step.
+> One file, two dependencies, and nothing clever. The other branches are
+> finished agents: `session-6` is support triage on a full harness, `session-5`
+> an English teacher, `session-1` the loop with tools.
+
+An agent is a loop. You type, it goes to a model, the reply comes back, and the
+conversation so far goes out with the next question. That is the whole thing —
+everything else is an answer to a problem *this* version has.
 
 ```sh
-git switch session-2
+# needs OPENROUTER_API_KEY in .env
 go run .
 ```
 
-No path to remember, and no way to accidentally run one session's agent from
-another session's directory.
+```
+you> what is 12 * 9?
 
-## The branches
+agent> 12 * 9 equals 108.
 
-| branch | what the agent can do |
+you> and what did I just ask you?
+
+agent> You asked what 12 multiplied by 9 is.
+```
+
+That second answer is the only feature here: the loop keeps a `history` slice
+and sends it whole every turn. Take it away and each message arrives at a model
+that has never met you.
+
+## What is in it
+
+```
+main.go     ~95 lines — the loop, one model call, and reading the reply
+go.mod      the OpenRouter SDK, and godotenv for the key
+```
+
+Three pieces, in reading order:
+
+1. **the REPL** — read a line, skip blanks, `exit` quits.
+2. **`ask`** — one model call. The whole history goes out, one reply comes back.
+3. **`text`** — pulls the string out of the SDK's optional string-or-array
+   content union.
+
+A failed turn drops the question it was for, so the history never keeps a
+message that was never answered.
+
+## What it cannot do
+
+This is the useful part of starting here. Everything below is missing on
+purpose, and each one is a session's worth of work:
+
+| It cannot… | What fixes it |
 |---|---|
-| [`session-1`](../../tree/session-1) | The loop: a conversation with a model, plus tools — web search, weather, reading and writing files, running commands behind a human-in-the-loop approval gate. History compaction keeps a long chat from growing the token bill. |
-| [`session-2`](../../tree/session-2) | Adds drawing. `generate_diagram` turns a prompt into a flowchart, table or chart in one call; `add_elements` / `update_elements` / `remove_elements` edit it in place. Renders to `canvas.svg` and `canvas.excalidraw`. |
-| [`session-3`](../../tree/session-3) | The drawing is rendered by **Excalidraw itself** — `convertToExcalidrawElements()` and `exportToSvg()` running under Node — so the output has the real hand-drawn stroke and fonts. Falls back to the built-in renderers when the sidecar isn't installed. |
+| do anything but talk | **tools** — describe a function to the model, run it when asked, feed the result back |
+| stay affordable in a long chat | **context management** — the history is sent whole and grows forever |
+| behave like anything in particular | **a system prompt** — there is none, so you get the model's defaults |
+| survive being killed mid-task | **durable execution** — nothing is written down; a crash loses the conversation |
+| be trusted with anything dangerous | **human-in-the-loop** — no gate, because there is nothing yet to gate |
+| be shown to be working | **evals** — no tests, no scores, nothing but your own reading of the replies |
 
-`main` holds this page and the shared `.gitignore`. It has no code, so nothing
-is duplicated between it and the session branches.
-
-## Running any session
-
-```sh
-git switch session-1        # or session-2, session-3
-go run .
-```
-
-You need `OPENROUTER_API_KEY` in a `.env` file at the repo root. `.env` is
-gitignored, so it stays put when you switch branches — set it once and every
-session picks it up.
-
-`session-3` additionally wants its Excalidraw renderer built, once:
-
-```sh
-cd excalidraw && npm install
-```
-
-Without it that session still draws, using the built-in renderers.
-
-## Tests
-
-```sh
-go test ./... -short     # fast, offline, no API key
-go test ./...            # everything, including live model calls
-```
-
-## Why branches
-
-Folders meant every session's code sat in every checkout, and the import paths
-carried a `session-N` segment that had to be rewritten each time a session was
-copied forward. As branches, each session is the whole repository at that point
-in the course: one module path, one layout, and `git diff session-1 session-2`
-shows exactly what a session added.
+Add them one at a time, and let each earn its place by fixing something you
+have actually felt.

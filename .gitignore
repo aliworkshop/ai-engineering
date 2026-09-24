@@ -12,3 +12,6 @@ canvas.skeleton.json
 # produced by the excalidraw renderer's npm install
 excalidraw-bundle.cjs
 package-lock.json
+
+# the binary, if you go build without -o
+/ai-engineering-course
