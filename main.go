@@ -1,8 +1,8 @@
 // Command agent is a small loop that talks to a model and can search the web.
 //
-// It is still deliberately thin: no system prompt, no persistence, one tool.
-// The loop is the thing worth reading — the model does not run anything itself,
-// it only *asks*, and this program decides what actually happens.
+// It is still deliberately thin: one tool, no persistence. The loop is the
+// thing worth reading — the model does not run anything itself, it only *asks*,
+// and this program decides what actually happens.
 //
 // Run:  go run .     (needs OPENROUTER_API_KEY in .env)
 package main
@@ -22,6 +22,28 @@ import (
 // Model is the OpenRouter model the agent talks to. It has to support tools.
 const Model = "openai/gpt-4o-mini"
 
+// SystemPrompt is the agent's standing instructions: who it is, and how to
+// behave. It is the first message in the conversation and stays there, so the
+// model reads it before every reply — which is also what makes it the most
+// expensive text in the program, and worth keeping short.
+//
+// Two of these lines are doing real work. "Answer from your own knowledge when
+// you can" is what stops a model with a search tool from searching for things
+// it knows; a tool in the list is an invitation, and an agent that searches for
+// 12 * 9 is slower, costlier and no more correct. And "keep the source URLs" is
+// what makes a searched answer checkable — without it the model happily
+// summarizes away the evidence.
+const SystemPrompt = `You are a command-line assistant. You answer questions, and you can search the web.
+
+- Answer from your own knowledge when you can. Do NOT search for things you
+  already know: arithmetic, definitions, how something works, general facts.
+- Use web_search when the answer depends on something current or changing —
+  news, prices, releases, versions, who holds a post today — or on anything
+  after your training cutoff. Keep the source URLs in your reply when you do.
+- Don't make things up. If you don't know and cannot find out, say so.
+- Keep answers short: a few sentences, or a short list. No preamble, no
+  restating the question, no offer of further help.`
+
 // maxSteps caps how many tool rounds one question may take before we give up.
 // Without it, a model that keeps asking for the same tool loops until your
 // credit does.
@@ -40,7 +62,16 @@ func main() {
 	// The conversation, in the order it happened. This slice is the agent's
 	// entire memory: it is sent whole on every turn, which is why a long chat
 	// gets slower and more expensive as it goes.
-	var history []components.ChatMessages
+	//
+	// The system prompt is message zero and never moves. Anything that trims
+	// this history later has to keep it — an agent that compacts away its own
+	// instructions forgets what it is halfway through a conversation.
+	history := []components.ChatMessages{
+		components.CreateChatMessagesSystem(components.ChatSystemMessage{
+			Role:    components.ChatSystemMessageRoleSystem,
+			Content: components.CreateChatSystemMessageContentStr(SystemPrompt),
+		}),
+	}
 
 	fmt.Println("Type a message, or 'exit' to quit.")
 	input := bufio.NewScanner(os.Stdin)
