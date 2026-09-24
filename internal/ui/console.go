@@ -26,10 +26,10 @@ func New(in io.Reader, out io.Writer) *Console {
 
 // Run is the read-eval-print loop: read a line, let the agent answer, repeat
 // until the user types "exit" or sends EOF (Ctrl-D).
+//
+// It no longer prints what the agent is doing mid-turn. The event stream does
+// that, and one channel for progress beats two that can disagree.
 func (c *Console) Run(ctx context.Context, ag *agent.Agent) {
-	// The agent reports what it is doing; this decides what that looks like.
-	ag.OnToolCall = c.logToolCall
-
 	fmt.Fprintln(c.out, "Type a message, or 'exit' to quit.")
 	for {
 		fmt.Fprint(c.out, "\nyou> ")
@@ -54,21 +54,4 @@ func (c *Console) Run(ctx context.Context, ag *agent.Agent) {
 		}
 		fmt.Fprintln(c.out, "\nagent>", answer)
 	}
-}
-
-// logToolCall shows a tool running. The arguments are the interesting half —
-// they are what the model decided to search for — so they are shown and the
-// result is not: a search write-up is several paragraphs, and printing it here
-// would show you the answer twice.
-func (c *Console) logToolCall(name, args, _ string) {
-	fmt.Fprintf(c.out, "  [%s] %s\n", name, truncate(args, 120))
-}
-
-// truncate keeps one tool line to one terminal line.
-func truncate(s string, max int) string {
-	flat := []rune(strings.NewReplacer("\n", " ", "\r", " ").Replace(s))
-	if len(flat) <= max {
-		return string(flat)
-	}
-	return string(flat[:max]) + "…"
 }
