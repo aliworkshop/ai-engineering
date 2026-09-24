@@ -1,8 +1,7 @@
-package main
+package tools
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -10,7 +9,7 @@ import (
 	"github.com/OpenRouterTeam/go-sdk/models/components"
 )
 
-// The one tool: search the web through OpenRouter itself, rather than through a
+// WebSearch searches the web through OpenRouter itself, rather than through a
 // third-party search API.
 //
 // OpenRouter does not expose search as its own endpoint — it models search as a
@@ -22,12 +21,21 @@ import (
 //
 // OPENROUTER_API_KEY is the only key you need: searches bill to the same
 // account as the model calls.
+type WebSearch struct {
+	// Client is the authenticated OpenRouter client the search call goes
+	// through. The tool cannot build one itself — that is main's job — so it
+	// is handed in, which is also what lets a test pass a stub.
+	Client *openrouter.OpenRouter
 
-// SearchTool is the name the model calls, and the name dispatch switches on.
+	// Model writes up what the plugin found.
+	Model string
+}
+
+// SearchTool is the name the model calls, and the name the registry routes on.
 const SearchTool = "web_search"
 
-// SearchModel writes up what the plugin found. Any model works — the plugin
-// does the searching — so a small, cheap one is the sensible choice.
+// SearchModel is the default write-up model. Any model works — the plugin does
+// the searching — so a small, cheap one is the sensible choice.
 const SearchModel = "openai/gpt-4o-mini"
 
 // maxResults caps how many hits OpenRouter feeds into the prompt. Enough to
@@ -46,39 +54,24 @@ results provided to you. Reply with a short factual summary followed by a
 "Sources:" list of the URLs you used. If the results don't answer the query,
 say so plainly. No preamble, no follow-up questions.`
 
-// searchSpec is what the model is told about the tool: a name, a sentence on
-// when to reach for it, and a JSON Schema for its arguments. This description
-// is the whole of the model's knowledge about the tool, so it is part of the
-// program, not a comment.
-func searchSpec() components.ChatFunctionTool {
-	description := "Search the web and get a summarized answer with source URLs. " +
-		"Use it for current events, prices, releases, and anything else you might be out of date on."
-
-	var params map[string]any
-	// A compile-time constant schema, so a parse failure is a programming error.
-	if err := json.Unmarshal([]byte(
-		`{"type":"object","properties":{"query":{"type":"string","description":"What to search for"}},"required":["query"]}`,
-	), &params); err != nil {
-		panic("bad tool schema: " + err.Error())
-	}
-
-	return components.CreateChatFunctionToolChatFunctionToolFunction(components.ChatFunctionToolFunction{
-		Type: components.ChatFunctionToolTypeFunction,
-		Function: components.ChatFunctionToolFunctionFunction{
-			Name:        SearchTool,
-			Description: &description,
-			Parameters:  params,
-		},
-	})
+// Spec is what the model is told about the tool: a name, a sentence on when to
+// reach for it, and a JSON Schema for its arguments. This description is the
+// whole of the model's knowledge about the tool, so it is part of the program,
+// not a comment.
+func (WebSearch) Spec() components.ChatFunctionTool {
+	return defineTool(SearchTool,
+		"Search the web and get a summarized answer with source URLs. "+
+			"Use it for current events, prices, releases, and anything else you might be out of date on.",
+		`{"type":"object","properties":{"query":{"type":"string","description":"What to search for"}},"required":["query"]}`)
 }
 
-// webSearch runs the tool. args is the JSON the model produced for the schema
+// Run executes the tool. args is the JSON the model produced for the schema
 // above — it is model output, so nothing in it is trusted to be well formed.
-func webSearch(ctx context.Context, client *openrouter.OpenRouter, args string) (string, error) {
+func (t WebSearch) Run(ctx context.Context, args string) (string, error) {
 	var a struct {
 		Query string `json:"query"`
 	}
-	if err := json.Unmarshal([]byte(args), &a); err != nil {
+	if err := decode(args, &a); err != nil {
 		return "", fmt.Errorf("bad arguments %q: %w", args, err)
 	}
 	query := strings.TrimSpace(a.Query)
@@ -86,8 +79,16 @@ func webSearch(ctx context.Context, client *openrouter.OpenRouter, args string) 
 		return "", fmt.Errorf("query is required")
 	}
 
-	res, err := client.Chat.Send(ctx, components.ChatRequest{
-		Model: openrouter.String(SearchModel),
+	if t.Client == nil {
+		return "", fmt.Errorf("openrouter client not configured")
+	}
+	model := t.Model
+	if model == "" {
+		model = SearchModel
+	}
+
+	res, err := t.Client.Chat.Send(ctx, components.ChatRequest{
+		Model: openrouter.String(model),
 		Messages: []components.ChatMessages{
 			components.CreateChatMessagesSystem(components.ChatSystemMessage{
 				Role:    components.ChatSystemMessageRoleSystem,
@@ -113,9 +114,19 @@ func webSearch(ctx context.Context, client *openrouter.OpenRouter, args string) 
 		return "", fmt.Errorf("search returned no choices")
 	}
 
-	answer := strings.TrimSpace(text(res.ChatResult.Choices[0].Message))
+	answer := strings.TrimSpace(replyText(res.ChatResult.Choices[0].Message))
 	if answer == "" {
 		return "No results.", nil
 	}
 	return answer, nil
+}
+
+// replyText pulls the plain text out of the write-up. The SDK models content as
+// an optional string-or-parts union; this sub-request only ever asks for text,
+// so anything else means an empty answer.
+func replyText(m components.ChatAssistantMessage) string {
+	if c, ok := m.Content.Get(); ok && c != nil && c.Str != nil {
+		return *c.Str
+	}
+	return ""
 }

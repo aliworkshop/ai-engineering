@@ -1,8 +1,9 @@
 // Command agent is a small loop that talks to a model and can search the web.
 //
-// It is still deliberately thin: one tool, no persistence. The loop is the
-// thing worth reading — the model does not run anything itself, it only *asks*,
-// and this program decides what actually happens.
+// The loop is the thing worth reading — the model does not run anything itself,
+// it only *asks*, and this program decides what actually happens. Which tools
+// exist is no longer its business: it asks a tools.Registry for the specs and
+// hands it the calls that come back.
 //
 // Run:  go run .     (needs OPENROUTER_API_KEY in .env)
 package main
@@ -17,6 +18,9 @@ import (
 	openrouter "github.com/OpenRouterTeam/go-sdk"
 	"github.com/OpenRouterTeam/go-sdk/models/components"
 	"github.com/joho/godotenv"
+
+	"github.com/aliworkshop/ai-engineering-course/internal/llm"
+	"github.com/aliworkshop/ai-engineering-course/internal/tools"
 )
 
 // Model is the OpenRouter model the agent talks to. It has to support tools.
@@ -57,7 +61,11 @@ func main() {
 		fmt.Println("Set OPENROUTER_API_KEY in your .env first.")
 		os.Exit(1)
 	}
-	client := openrouter.New(openrouter.WithSecurity(apiKey))
+	client := llm.NewOpenRouter(apiKey)
+
+	// The one place that decides which tools exist is tools.Default. From here
+	// on this file only knows there is a toolbox.
+	toolbox := tools.Default(client)
 
 	// The conversation, in the order it happened. This slice is the agent's
 	// entire memory: it is sent whole on every turn, which is why a long chat
@@ -97,7 +105,7 @@ func main() {
 			Content: components.CreateChatUserMessageContentStr(line),
 		}))
 
-		answer, err := turn(context.Background(), client, &history)
+		answer, err := turn(context.Background(), client, toolbox, &history)
 		if err != nil {
 			history = history[:start]
 			fmt.Println("error:", err)
@@ -114,9 +122,9 @@ func main() {
 // history is a pointer because a turn grows it — the model's tool request and
 // each result have to be in the conversation, or the next model call has no
 // idea why it is being asked again.
-func turn(ctx context.Context, client *openrouter.OpenRouter, history *[]components.ChatMessages) (string, error) {
+func turn(ctx context.Context, client *openrouter.OpenRouter, toolbox *tools.Registry, history *[]components.ChatMessages) (string, error) {
 	for step := 0; step < maxSteps; step++ {
-		reply, err := think(ctx, client, *history)
+		reply, err := think(ctx, client, toolbox, *history)
 		if err != nil {
 			return "", err
 		}
@@ -135,7 +143,7 @@ func turn(ctx context.Context, client *openrouter.OpenRouter, history *[]compone
 			// several calls in one turn.
 			*history = append(*history, components.CreateChatMessagesTool(components.ChatToolMessage{
 				Role:       components.ChatToolMessageRoleTool,
-				Content:    components.CreateChatToolMessageContentStr(dispatch(ctx, client, call)),
+				Content:    components.CreateChatToolMessageContentStr(toolbox.Dispatch(ctx, call.Function.Name, call.Function.Arguments)),
 				ToolCallID: call.ID,
 			}))
 		}
@@ -145,11 +153,11 @@ func turn(ctx context.Context, client *openrouter.OpenRouter, history *[]compone
 
 // think is one model call: the whole conversation goes out, with the tools the
 // model is allowed to ask for, and one reply comes back.
-func think(ctx context.Context, client *openrouter.OpenRouter, history []components.ChatMessages) (components.ChatAssistantMessage, error) {
+func think(ctx context.Context, client *openrouter.OpenRouter, toolbox *tools.Registry, history []components.ChatMessages) (components.ChatAssistantMessage, error) {
 	res, err := client.Chat.Send(ctx, components.ChatRequest{
 		Model:    openrouter.String(Model),
 		Messages: history,
-		Tools:    []components.ChatFunctionTool{searchSpec()},
+		Tools:    toolbox.Specs(),
 	}, nil)
 	if err != nil {
 		return components.ChatAssistantMessage{}, err
@@ -163,23 +171,6 @@ func think(ctx context.Context, client *openrouter.OpenRouter, history []compone
 	// message with no role is not one the API will accept on the next turn.
 	reply.Role = components.ChatAssistantMessageRoleAssistant
 	return reply, nil
-}
-
-// dispatch runs the tool the model asked for and ALWAYS returns a string,
-// turning any failure into text the model can read and react to. A tool that
-// crashed the program would take the conversation with it; a tool that says
-// "that didn't work" lets the model try something else.
-func dispatch(ctx context.Context, client *openrouter.OpenRouter, call components.ChatToolCall) string {
-	switch call.Function.Name {
-	case SearchTool:
-		result, err := webSearch(ctx, client, call.Function.Arguments)
-		if err != nil {
-			return "error: " + err.Error()
-		}
-		return result
-	default:
-		return "error: unknown tool " + call.Function.Name
-	}
 }
 
 // text pulls the reply out of the SDK's optional string-or-array union. A
