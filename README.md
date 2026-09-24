@@ -1,4 +1,4 @@
-# The loop (Go) — a prompt, a tool, and layers that point inward
+# The brittle agent (Go) — a harness jacket over a loop that loses everything
 
 > **Branch `session-7`.** Built up from nothing, one step at a time. Two
 > dependencies and nothing clever. The other branches are finished agents:
@@ -6,37 +6,103 @@
 > teacher, `session-1` the loop with tools.
 >
 > **Step 1** was the loop: talk to a model, keep the history. **Step 2** added
-> one tool, and the loop that runs it. **Step 3** added a system prompt.
-> **Step 4** is here: the same program, in layers that can be replaced one at
-> a time.
+> one tool. **Step 3** a system prompt. **Step 4** clean layers. **Step 5** is
+> here: [week 3, part 1 — the brittle
+> agent](https://github.com/pjsofts/ai-engineering-1/tree/main/week3-workshop/part1-brittle),
+> where every move becomes an event and the dangerous tool runs with nothing
+> in its way.
 
-An agent is a loop. You type, it goes to a model, the reply comes back, and the
-conversation so far goes out with the next question. Give the model a tool and
-one thing changes: a reply can now be a *request* instead of an answer — run
-this, then ask me again — and the loop keeps going until the model stops
-asking.
+This is a **support triage agent**. Give it work items and it classifies each
+one, reads the knowledge base, drafts a reply, and sends it. Three of those
+tools are harmless. The fourth emails the customer.
 
 ```sh
 # needs OPENROUTER_API_KEY in .env
-go run .
+go run . -sample     # the three sample items, one shot
+go run .             # or talk to it
 ```
 
 ```
-you> what is 12 * 9?
-
-agent> 12 * 9 equals 108.
-
-you> who won the 2026 winter olympics medal count?
-  [web_search] {"query":"2026 Winter Olympics medal count winner"}
-
-agent> Norway won the medal count at the 2026 Winter Olympics, with 41 medals…
-       Sources: https://olympics.com/en/milano-cortina-2026/medals …
+  ▶  workflow.started      6db483e3  {"input":"Handle these work items:…"}
+  ⚙  tool.requested        6db483e3  {"name":"classifyItem","call":"call_MCa2…
+  ✓  tool.completed        6db483e3  {"name":"classifyItem","call":"call_MCa2…
+  ⚙  tool.requested        6db483e3  {"name":"sendReply","call":"call_lvcYHV8…
+  ✓  tool.completed        6db483e3  {"name":"sendReply","call":"call_lvcYHV8…
+  ✔  workflow.completed    6db483e3  {"output":"I processed three work items…"}
 ```
 
-Two things are worth noticing in that transcript. The model answered `12 * 9`
-by itself — a tool it holds is not a tool it has to use, and the system prompt
-is what tells it so. And the search was its idea: nothing in this program
-decides *when* to search, it only decides what happens when the model asks.
+## It is wrong on purpose
+
+Read the two `sendReply` lines again. It "really emails the customer", it
+cannot be recalled, and between *requested* and *completed* there is nothing:
+no policy, no human, no record that it happened. The model asked, and the mail
+went out in the same millisecond.
+
+That is one of two failures staged here deliberately:
+
+| what is broken | what it costs you |
+|---|---|
+| **The state is a slice.** `Agent.history` lives in memory and nowhere else | Kill the process and the conversation is gone — mid-task, mid-spend, mid-`sendReply`, with no way to know which. Start again and everything runs a second time |
+| **The dangerous tool is unmediated.** `sendReply` runs the instant it is requested | Nothing asks, nothing checks, nothing is written down. There is no log to audit and no way to tell a first send from a second |
+
+Neither is an oversight, and neither is fixed by being careful. The prompt is
+the only thing currently standing between the model and an irreversible
+action, and *a prompt is not a control*. Both failures are what the harness
+gets built to answer — and feeling them once is cheaper than being told about
+them.
+
+## Everything is an event (`internal/events`)
+
+The harness never prints its feelings. It emits typed `Event` values, and a
+sink decides what they look like:
+
+```go
+type Emitter interface{ Emit(Event) }
+```
+
+Today there is exactly one sink — a `Console` that renders a glyph, the type,
+the workflow id, and whatever detail the event carries. But the reason to
+build it this way is not prettier output. Progress that exists only as a
+`fmt.Println` is invisible to everything except a human watching the screen.
+An event is a value: it can be counted, written to a file, pushed down a
+socket, or replayed. Every later sink is an addition rather than a rewrite.
+
+The glyph table is deliberately wider than what anything emits —
+`agent.handoff`, `approval.requested`, `plan.created`, `subagent.*` — because
+that map is the roadmap, and a name reserved now cannot be spelled two ways
+later.
+
+One `Ask` is one **workflow**, with an eight-character id that every event in
+the run carries. It is also the only thing about a run that outlives it, which
+is another way of saying nothing does.
+
+## The toolbox (`internal/tools/support.go`)
+
+| tool | what it does | dangerous? |
+|---|---|---|
+| `classifyItem` | files an item under billing / technical / sales / other | no |
+| `searchKnowledgeBase` | returns the house answer for a topic | no |
+| `draftReply` | writes a reply — sends nothing | no |
+| `sendReply` | **emails the customer. Irreversible, and nothing checks first** | **yes** |
+
+Two things about that table are worth more than the code under it.
+
+**Nothing at the call site announces the difference.** `SendReply.Run` looks
+exactly like `DraftReply.Run` — decode the arguments, return some JSON. The
+danger is not visible where the tool runs, which is why it has to be handled
+by the harness around it rather than by whoever is reading the code.
+
+**The description is the interface.** `Spec()` is everything the model knows
+about a tool: the name, one sentence, and a JSON Schema. `classifyItem`'s
+schema pins `category` to an enum rather than a free string, so the model
+cannot invent a fifth. That schema is program text, not documentation.
+
+**Retrieval is four keys and a substring match**, and it misses on purpose
+sometimes: an article matches only when the query mentions its topic, so a
+search for "charged twice" finds nothing under `billing`. A miss returns *"No
+exact match - use your judgment"* rather than an empty list, because a model
+handed `[]` quietly invents a policy and one handed a sentence tends to admit
+it is unsure. The interesting failure in this scenario is never the ranking.
 
 ## Architecture
 
@@ -47,21 +113,25 @@ anything outer, so each layer can be tested — or replaced — on its own.
 ```
 main.go                    wire the pieces together, then run
   └── internal/
-        ui/       Console  the REPL. Owns stdin and stdout; nothing else prints
+        ui/       Console  the REPL. Owns stdin
         agent/    Agent    the loop, the conversation, the system prompt
         tools/    Registry the Tool interface, and every tool
+        events/   Event    the typed stream, and the glyphed console
         llm/               the one place the OpenRouter client is built
 ```
+
+`events` sits *under* the agent and imports nothing of ours, so any layer may
+emit and none of them has to know where the events go.
 
 `main.go` is now four lines of wiring, outermost last:
 
 ```go
 client    := llm.NewOpenRouter(apiKey)
-toolbox   := tools.Default(client)
-assistant := agent.New(client, Model, toolbox)
-console   := ui.New(os.Stdin, os.Stdout)
+toolbox   := tools.Default()
+assistant := agent.New(client, Model, toolbox).
+                 WithEvents(events.NewConsole(os.Stdout))
 
-console.Run(context.Background(), assistant)
+ui.New(os.Stdin, os.Stdout).Run(context.Background(), assistant)
 ```
 
 Three seams carry the whole thing:
@@ -79,10 +149,10 @@ Three seams carry the whole thing:
   writable to disk later. The SDK's union types live in two translation
   functions at the boundary.
 
-And one hook. The agent does not print — it calls `OnToolCall` if something is
-listening, and the console decides what that looks like. That is what lets the
-same loop be driven later by a test, a script, or a browser without touching a
-line of it.
+And one more seam: **`events.Emitter`**. The agent does not print — it emits,
+and a nil emitter is a silent agent rather than a broken one. That is what
+lets the same loop be driven later by a test, a script, or a browser without
+touching a line of it.
 
 ## The loop (`internal/agent`)
 
@@ -93,14 +163,14 @@ for step := 0; step < maxSteps; step++ {
     if len(reply.ToolCalls) == 0 {
         return reply.Text                // it answered: done
     }
-    runTools(ctx, reply.ToolCalls)       // it asked: do the work, append results
+    runTools(ctx, wf, reply.ToolCalls)   // it asked: do the work, append results
 }
 ```
 
 Three things the loop owns rather than the model:
 
-- **`maxSteps`** — a model that keeps asking for the same tool otherwise loops
-  until your credit does.
+- **`maxSteps`** (10) — a model that keeps asking for the same tool otherwise
+  loops until your credit does.
 - **Dispatch always returns a string.** A failure becomes `error: …` in the
   transcript, so the model can try something else. An error that propagated
   would end the conversation.
@@ -111,19 +181,16 @@ Three things the loop owns rather than the model:
 ## The system prompt
 
 Without one you get the model's defaults: a chatty assistant that restates your
-question, offers further help, and reaches for the search tool because the tool
-is there. The prompt is how you say otherwise.
+question and offers further help. The prompt is how you say otherwise — here,
+that the job is a four-step pipeline and that every item gets worked.
 
 ```go
-const SystemPrompt = `You are a command-line assistant. You answer questions, and you can search the web.
-
-- Answer from your own knowledge when you can. Do NOT search for things you
-  already know: arithmetic, definitions, how something works, general facts.
-- Use web_search when the answer depends on something current or changing …
-  Keep the source URLs in your reply when you do.
-- Don't make things up. If you don't know and cannot find out, say so.
-- Keep answers short: a few sentences, or a short list. No preamble, no
-  restating the question, no offer of further help.`
+const SystemPrompt = `You are a support triage agent.
+For each work item the user gives you:
+1. Classify it with classifyItem.
+2. Search the knowledge base with searchKnowledgeBase if it helps.
+3. Draft a reply with draftReply, then send it with sendReply.
+Work through every item, then briefly summarize what you did.`
 ```
 
 Three things about it are worth more than the text itself:
@@ -133,59 +200,13 @@ Three things about it are worth more than the text itself:
   the most expensive text in the program — sent on every turn, forever — so it
   stays short. Anything that trims this history later has to keep it: an agent
   that compacts away its own instructions forgets what it is mid-conversation.
-- **A tool in the list is an invitation.** "Answer from your own knowledge when
-  you can" is the line that stops a model with a search tool from searching for
-  `12 * 9`. Tool descriptions and the prompt are one system: the description
-  says what the tool is for, the prompt says when *not* to reach for it.
-- **The last line is a product decision.** "No preamble, no offer of further
-  help" is what makes the replies above fit on a terminal. A prompt is mostly
-  where the behaviour you want lives, and the first place to look when the
-  behaviour you get is wrong.
-
-Ask it something unknowable and the third line shows up instead of an
-invention:
-
-```
-you> who is the current king of Narnia?
-
-agent> Narnia is a fictional place from C.S. Lewis's "The Chronicles of
-       Narnia". There isn't a current king — it's a fantasy world…
-```
-
-## The tool (`internal/tools/search.go`)
-
-`web_search` searches through OpenRouter itself rather than a third-party
-search API, so `OPENROUTER_API_KEY` remains the only key you need.
-
-OpenRouter does not expose search as its own endpoint — it models search as a
-**plugin on a chat request**. The tool sends the query as a one-off completion
-with the `web` plugin attached; OpenRouter runs the search, injects the hits
-into that request's prompt, and the model writes the findings back. So what
-comes back is an already-summarized answer with source URLs rather than raw
-ranked results, at the cost of one extra model call.
-
-```go
-Plugins: []components.ChatRequestPlugin{
-    components.CreateChatRequestPluginWeb(components.WebSearchPlugin{
-        ID:         components.WebSearchPluginIDWeb,
-        MaxResults: openrouter.Int64(maxResults),
-    }),
-},
-```
-
-Three details that are easy to get wrong:
-
-- **The description is the interface.** `Spec()` is everything the model knows
-  about the tool. "Use it for current events, prices, releases, and
-  anything else you might be out of date on" is what stops it searching for
-  `12 * 9`, and it is program text, not a comment.
-- **Ask for the URLs in the prose.** The plugin returns citations as
-  annotations the SDK's assistant message does not expose, so the sub-request's
-  system prompt asks for a `Sources:` list inside the text, where it can
-  actually be read.
-- **Arguments are model output.** `{"query":…}` is generated, not typed — it is
-  unmarshalled defensively and an empty query is an error the model gets told
-  about.
+- **A tool in the list is an invitation.** The prompt and the tool descriptions
+  are one system: the description says what a tool is for, the prompt says when
+  to reach for it. Line 3 is the only reason `sendReply` ever runs.
+- **And line 3 is also the whole problem.** One sentence of English is what
+  currently governs an irreversible action. Change the prompt and the behaviour
+  changes; jailbreak the prompt and the behaviour changes. A prompt is where
+  behaviour *lives*, but it is not a place to put a *control*.
 
 ## What it cannot do
 
@@ -194,11 +215,12 @@ purpose, and each one is a session's worth of work:
 
 | It cannot… | What fixes it |
 |---|---|
-| do anything but talk and search | **more tools** — files, shell, a private knowledge base |
+| survive being killed mid-task | **durable execution** — checkpoint each step, so a resumed run replays instead of repeating |
+| be trusted with `sendReply` | **human-in-the-loop** — a gate the dangerous tool has to pass, and that can wait for days |
+| tell you what it did yesterday | **a durable event log** — the stream exists, but only ever reaches a terminal |
 | stay affordable in a long chat | **context management** — the history is sent whole and grows forever |
-| survive being killed mid-task | **durable execution** — nothing is written down; a crash loses the conversation |
-| be trusted with anything dangerous | **human-in-the-loop** — no gate, because there is nothing yet to gate |
 | be shown to be working | **evals** — no tests, no scores, nothing but your own reading of the replies. The seams above are what make them cheap to write: a stub `ToolBox` is three lines |
 
 Add them one at a time, and let each earn its place by fixing something you
-have actually felt.
+have actually felt. The first two are what this part was built to make you
+feel.
