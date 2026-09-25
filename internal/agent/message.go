@@ -8,27 +8,31 @@ import (
 // Msg is one message in our own vocabulary rather than the SDK's.
 //
 // Owning this type is what buys the package boundary. The conversation becomes
-// a plain Go value: easy to read in a debugger, easy to build in a test, easy
-// to write to disk later. The SDK's union types stay in the two translation
-// functions below, where a change to the wire format is a change to one file.
+// a plain Go value: easy to read in a debugger, easy to build in a test, and —
+// now that model turns are checkpointed — easy to write to disk. That last one
+// is why the JSON tags are here: you can only checkpoint what serializes, and
+// the SDK's rich message type does not.
+//
+// The SDK's union types stay in the two translation functions below, where a
+// change to the wire format is a change to one file.
 type Msg struct {
-	Role string // "system", "user", "assistant", "tool"
-	Text string
+	Role string `json:"role"` // "system", "user", "assistant", "tool"
+	Text string `json:"text,omitempty"`
 
 	// ToolCalls is what an assistant message ASKED for. A reply that only asks
 	// for tools has no Text at all.
-	ToolCalls []ToolCall
+	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
 
 	// ToolCallID ties a "tool" message back to the call it answers. Matching
 	// those ids is what lets the model batch several calls in one turn.
-	ToolCallID string
+	ToolCallID string `json:"tool_call_id,omitempty"`
 }
 
 // ToolCall is one request from the model to run something.
 type ToolCall struct {
-	ID   string
-	Name string
-	Args string // the model's JSON arguments, verbatim
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Args string `json:"args"` // the model's JSON arguments, verbatim
 }
 
 // toSDK translates the conversation into the SDK's message union, once per

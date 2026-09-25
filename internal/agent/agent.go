@@ -5,6 +5,14 @@
 // is main), or where the answer is printed (that is ui). Everything it needs
 // from the outside arrives through a small interface or a callback, which is
 // what makes the loop testable without a terminal, a network, or a real tool.
+//
+// Since Part 2 the loop is also DETERMINISTIC, and that word is load-bearing.
+// Every model call and every tool call is a checkpointed step, and everything
+// else in the body — building the message list, deciding what to do next — is
+// derived from the workflow's own input and the results of those steps. That
+// is what makes a replay exact: re-run the body after a crash and it rebuilds
+// itself from disk, without a model call or a side effect, up to the moment it
+// died.
 package agent
 
 import (
@@ -12,10 +20,12 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"os"
 
 	openrouter "github.com/OpenRouterTeam/go-sdk"
 	"github.com/OpenRouterTeam/go-sdk/models/components"
 
+	"github.com/aliworkshop/ai-engineering-course/internal/durable"
 	"github.com/aliworkshop/ai-engineering-course/internal/events"
 )
 
@@ -32,91 +42,82 @@ type ToolBox interface {
 	Dispatch(ctx context.Context, name, args string) string
 }
 
-// Agent holds one running conversation and the loop that advances it.
+// Store is where workflows live, if one is wired in. Declared as an interface
+// for the same reason as ToolBox — and because an agent with no store is still
+// a working agent, just one that cannot survive a crash. That is the Part 1
+// agent, and it is kept: the claim only means something if you can run the
+// other version.
+type Store interface {
+	Open(id, input string) (*durable.Workflow, error)
+}
+
+// Agent holds the loop and everything it was wired with.
+//
+// Notice what it no longer holds: a conversation. A run's messages are local
+// to that run, rebuilt from the workflow's input and its checkpointed steps.
+// A field would have survived across REPL turns and quietly broken replay — a
+// resumed run in a fresh process would have rebuilt a different context, and
+// the first live model call after recovery would have seen a conversation the
+// original never had.
 type Agent struct {
 	client *openrouter.OpenRouter
 	model  string
 	tools  ToolBox
 
-	// history is the whole conversation, in the order it happened, and the
-	// agent's entire memory. It is sent whole on every turn, which is why a
-	// long chat gets slower and more expensive as it goes.
-	//
-	// BRITTLE STATE: it is a slice, and nothing else. Kill the process and the
-	// conversation dies with it — mid-task, mid-spend, mid-sendReply — with no
-	// way to know which of those three it was. Everything above this line is a
-	// harness; this line is why it is not yet a runtime.
-	//
-	// The system prompt is message zero and never moves. Anything that trims
-	// this later has to keep it: an agent that compacts away its own
-	// instructions forgets what it is mid-conversation.
-	history []Msg
-
-	// bus is where the agent reports what it is doing. Optional: a nil bus is
-	// a silent agent, not a broken one, which is what keeps the loop runnable
-	// from a test with no terminal in sight.
-	bus events.Emitter
+	// store, bus and crashAt are all optional. A nil store is the brittle
+	// loop, a nil bus is a silent one, and crashAt below zero never fires.
+	store   Store
+	bus     events.Emitter
+	crashAt int
 }
 
-// WithEvents points the agent at an event stream. Separate from New because
-// every service in this harness is opt-in: the loop is the same loop with or
-// without one, and only its visibility changes.
+// New starts an agent with the standing prompt and the tools it was given.
+func New(client *openrouter.OpenRouter, model string, tools ToolBox) *Agent {
+	return &Agent{client: client, model: model, tools: tools, crashAt: -1}
+}
+
+// WithEvents points the agent at an event stream.
 func (a *Agent) WithEvents(bus events.Emitter) *Agent {
 	a.bus = bus
 	return a
 }
 
-// New starts an agent with the standing prompt and the tools it was given.
-func New(client *openrouter.OpenRouter, model string, tools ToolBox) *Agent {
-	return &Agent{
-		client: client,
-		model:  model,
-		tools:  tools,
-		history: []Msg{
-			{Role: "system", Text: SystemPrompt},
-		},
-	}
+// WithStore makes the agent durable: each task becomes a workflow whose model
+// turns and tool calls are checkpointed. One line, and it is the whole
+// difference between a script and a runtime.
+func (a *Agent) WithStore(store Store) *Agent {
+	a.store = store
+	return a
 }
 
-// Ask answers one question, running whatever tools the model asks for along the
-// way, and returns its final reply.
-//
-// One Ask is one WORKFLOW: it gets an id, and every event it produces carries
-// that id, so two runs interleaved in a log can still be told apart. The id is
-// the only thing about this run that outlives it — which is to say, nothing
-// about this run outlives it. See the note on history above.
-//
-// A failed turn rewinds the history to where it started. A turn can append
-// several messages — the model's request, each tool's result — and a half
-// written turn is worse than no turn: a tool call with no result is a
-// conversation the API will refuse on the next question.
+// WithCrashAt is a DEMO HOOK, not a feature: before the given step the process
+// exits, simulating a machine dying mid-task after real side effects have
+// already happened. It is here because the durability claim is worth nothing
+// until you have watched it fail and recover.
+func (a *Agent) WithCrashAt(step int) *Agent {
+	a.crashAt = step
+	return a
+}
+
+// Ask works one task and returns the answer. One Ask is one WORKFLOW: it gets
+// an id, and with a store behind it, it gets a file.
 func (a *Agent) Ask(ctx context.Context, input string) (string, error) {
-	wf := newWorkflowID()
-	events.Emit(a.bus, events.Event{
-		Type: events.WorkflowStarted, Workflow: wf, Input: input,
-	})
+	return a.run(ctx, newWorkflowID(), input)
+}
 
-	start := len(a.history)
-	a.history = append(a.history, Msg{Role: "user", Text: input})
-
-	answer, err := a.run(ctx, wf)
-	if err != nil {
-		a.history = a.history[:start]
-		events.Emit(a.bus, events.Event{
-			Type: events.WorkflowFailed, Workflow: wf, Error: err.Error(),
-		})
-		return "", err
+// Resume re-runs a workflow that stopped early. There is no separate recovery
+// code path: replay serves the checkpointed steps from disk — no model calls,
+// no repeated side effects — and execution races forward to exactly where it
+// stopped.
+func (a *Agent) Resume(ctx context.Context, workflowID string) (string, error) {
+	if a.store == nil {
+		return "", fmt.Errorf("agent: cannot resume without a durable store")
 	}
-
-	events.Emit(a.bus, events.Event{
-		Type: events.WorkflowCompleted, Workflow: wf, Output: answer,
-	})
-	return answer, nil
+	return a.run(ctx, workflowID, "")
 }
 
 // newWorkflowID names one run. Eight hex characters is enough to tell today's
-// runs apart and short enough to read in a stream, and crypto/rand keeps it a
-// name rather than a sequence — nothing here is counting workflows.
+// runs apart and short enough to read in a stream.
 func newWorkflowID() string {
 	var b [4]byte
 	if _, err := rand.Read(b[:]); err != nil {
@@ -125,39 +126,152 @@ func newWorkflowID() string {
 	return hex.EncodeToString(b[:])
 }
 
-// History exposes the conversation for inspection. It returns a copy, because
-// the loop rewrites this slice as it works and a caller holding the original
-// would be reading a moving target.
-func (a *Agent) History() []Msg {
-	return append([]Msg(nil), a.history...)
+// run opens the workflow, drives the loop, and records how it ended.
+func (a *Agent) run(ctx context.Context, id, input string) (string, error) {
+	// No store: the Part 1 loop, unchanged and honest about it.
+	if a.store == nil {
+		events.Emit(a.bus, events.Event{Type: events.WorkflowStarted, Workflow: id, Input: input})
+		answer, err := a.loop(ctx, nil, id, input)
+		a.finished(id, answer, err)
+		return answer, err
+	}
+
+	wf, err := a.store.Open(id, input)
+	if err != nil {
+		return "", err
+	}
+
+	started := events.WorkflowStarted
+	if wf.Resumed() {
+		started = events.WorkflowResumed
+	}
+	events.Emit(a.bus, events.Event{Type: started, Workflow: wf.ID(), Input: wf.Input()})
+
+	answer, err := a.loop(ctx, wf, wf.ID(), wf.Input())
+	if err != nil {
+		// Failed, not finished: the file stays on disk with every completed
+		// step in it, which is what makes the next attempt cheap.
+		_ = wf.Finish(durable.StatusFailed)
+		a.finished(id, answer, err)
+		return "", err
+	}
+	if err := wf.Finish(durable.StatusDone); err != nil {
+		return "", err
+	}
+	a.finished(id, answer, nil)
+	return answer, nil
 }
 
-// run is the loop itself: think, run whatever tools the model asked for, think
-// again with the results, and stop when a reply carries no tool calls. That
-// sentence is the whole agent.
-func (a *Agent) run(ctx context.Context, wf string) (string, error) {
-	for step := 0; step < maxSteps; step++ {
-		reply, err := a.think(ctx)
+// finished emits the one event that says how a run ended.
+func (a *Agent) finished(id, answer string, err error) {
+	if err != nil {
+		events.Emit(a.bus, events.Event{Type: events.WorkflowFailed, Workflow: id, Error: err.Error()})
+		return
+	}
+	events.Emit(a.bus, events.Event{Type: events.WorkflowCompleted, Workflow: id, Output: answer})
+}
+
+// loop is the agent itself: think, run whatever tools the model asked for,
+// think again with the results, and stop when a reply carries no tool calls.
+//
+// Everything non-deterministic happens inside a step. Everything outside one —
+// this slice, this counter, this if — is rebuilt identically on a replay,
+// which is the golden rule of durable workflows and the only reason recovery
+// can be this simple.
+func (a *Agent) loop(ctx context.Context, wf *durable.Workflow, id, input string) (string, error) {
+	working := []Msg{
+		{Role: "system", Text: SystemPrompt},
+		{Role: "user", Text: input},
+	}
+
+	for i := 0; i < maxSteps; i++ {
+		a.maybeCrash(wf, i)
+
+		name := fmt.Sprintf("model-%02d", i)
+		reply, err := step(wf, name, func() (Msg, error) { return a.think(ctx, working) })
 		if err != nil {
 			return "", err
 		}
-		a.history = append(a.history, reply)
+		working = append(working, reply)
 
 		// No tool calls means the model is answering rather than acting.
 		if len(reply.ToolCalls) == 0 {
 			return reply.Text, nil
 		}
-		a.runTools(ctx, wf, reply.ToolCalls)
+
+		for _, call := range reply.ToolCalls {
+			result, err := a.runTool(ctx, wf, id, call)
+			if err != nil {
+				return "", err
+			}
+			working = append(working, Msg{Role: "tool", Text: result, ToolCallID: call.ID})
+		}
 	}
 	return "", fmt.Errorf("hit the step limit after %d tool rounds", maxSteps)
 }
 
-// think is one model call: the whole conversation goes out, with the tools the
-// model is allowed to ask for, and one reply comes back.
-func (a *Agent) think(ctx context.Context) (Msg, error) {
+// runTool runs one tool as a checkpointed step.
+//
+// The two tool events are emitted from INSIDE the step, which is a small
+// decision with a large consequence. A replay does not re-run the step, so it
+// does not re-emit them — which means a tool.requested in the log is a tool
+// that actually ran. Counting them is then a real answer to "did any side
+// effect happen twice?", and that is exactly what -audit counts. Emit them
+// outside the step and every successful recovery would look like a duplicate.
+func (a *Agent) runTool(ctx context.Context, wf *durable.Workflow, id string, call ToolCall) (string, error) {
+	return step(wf, "tool-"+call.ID, func() (string, error) {
+		events.Emit(a.bus, events.Event{
+			Type: events.ToolRequested, Workflow: id,
+			Name: call.Name, Call: call.ID, Args: call.Args,
+		})
+
+		// Dispatch turns a failure into text rather than an error, so a broken
+		// tool becomes something the model can read and work around instead of
+		// the end of the conversation — and, here, instead of a step that
+		// refuses to checkpoint.
+		result := a.tools.Dispatch(ctx, call.Name, call.Args)
+
+		events.Emit(a.bus, events.Event{
+			Type: events.ToolCompleted, Workflow: id,
+			Name: call.Name, Call: call.ID,
+		})
+		return result, nil
+	})
+}
+
+// step runs fn as a checkpointed step when there is a workflow, and just runs
+// it when there is not. One code path for the durable agent and the brittle
+// one, so the comparison is between two runs of the same loop rather than
+// between two loops.
+//
+// A free function because Go does not allow type parameters on methods.
+func step[T any](wf *durable.Workflow, name string, fn func() (T, error)) (T, error) {
+	if wf == nil {
+		return fn()
+	}
+	return durable.Step(wf, name, fn)
+}
+
+// maybeCrash is the demo hook. It fires only when the step has NOT already
+// been checkpointed, so a recovery run replays straight past the crash point
+// instead of dying there forever.
+func (a *Agent) maybeCrash(wf *durable.Workflow, i int) {
+	if a.crashAt < 0 || i != a.crashAt {
+		return
+	}
+	if wf != nil && wf.Cached(fmt.Sprintf("model-%02d", i)) {
+		return
+	}
+	fmt.Printf("\n  💥 simulated crash before step %d — the process is gone.\n", i)
+	os.Exit(1)
+}
+
+// think is one model call: the conversation so far goes out, with the tools
+// the model is allowed to ask for, and one reply comes back.
+func (a *Agent) think(ctx context.Context, working []Msg) (Msg, error) {
 	res, err := a.client.Chat.Send(ctx, components.ChatRequest{
 		Model:    openrouter.String(a.model),
-		Messages: toSDK(a.history),
+		Messages: toSDK(working),
 		Tools:    a.tools.Specs(),
 	}, nil)
 	if err != nil {
@@ -167,34 +281,4 @@ func (a *Agent) think(ctx context.Context) (Msg, error) {
 		return Msg{}, fmt.Errorf("model returned no choices")
 	}
 	return fromAssistant(res.ChatResult.Choices[0].Message), nil
-}
-
-// runTools runs each requested tool and appends its result to the conversation.
-//
-// The model never runs anything itself — it only asks, and this is the code
-// that decides what actually happens. Dispatch turns a failure into text rather
-// than an error, so a broken tool becomes something the model can read and work
-// around instead of the end of the conversation.
-//
-// Two events per call, and the gap between them is the interesting part: it is
-// where a harness would check a policy, ask a human, or write the call down
-// before running it. Today there is no gap. The tool runs the moment it is
-// requested, sendReply included.
-func (a *Agent) runTools(ctx context.Context, wf string, calls []ToolCall) {
-	for _, call := range calls {
-		events.Emit(a.bus, events.Event{
-			Type: events.ToolRequested, Workflow: wf,
-			Name: call.Name, Call: call.ID, Args: call.Args,
-		})
-
-		result := a.tools.Dispatch(ctx, call.Name, call.Args)
-
-		events.Emit(a.bus, events.Event{
-			Type: events.ToolCompleted, Workflow: wf,
-			Name: call.Name, Call: call.ID,
-		})
-		a.history = append(a.history, Msg{
-			Role: "tool", Text: result, ToolCallID: call.ID,
-		})
-	}
 }
