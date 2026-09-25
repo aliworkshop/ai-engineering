@@ -88,8 +88,9 @@ type Console struct {
 func NewConsole(w io.Writer) *Console { return &Console{out: w} }
 
 // Emit renders one line: glyph, type, workflow, and whatever detail the event
-// carries as JSON. The detail is truncated rather than wrapped, because a
-// stream you can scan down the left edge is worth more than a complete line.
+// carries as JSON — all of it. A truncated stream is easier to scan and worse
+// to debug with, and the whole reason to have a stream is the moment you need
+// to know exactly what the model asked for.
 func (c *Console) Emit(e Event) {
 	mark, ok := glyph[e.Type]
 	if !ok {
@@ -101,14 +102,5 @@ func (c *Console) Emit(e Event) {
 		detail = []byte("{}")
 	}
 	fmt.Fprintf(c.out, "  %s  %-21s %-9s %s\n",
-		mark, e.Type, e.Workflow, truncate(string(detail), 90))
-}
-
-// truncate keeps one event to one terminal line.
-func truncate(s string, max int) string {
-	flat := []rune(s)
-	if len(flat) <= max {
-		return s
-	}
-	return string(flat[:max]) + "…"
+		mark, e.Type, e.Workflow, string(detail))
 }
