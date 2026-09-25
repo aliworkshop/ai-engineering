@@ -1,16 +1,17 @@
-# The brittle agent (Go) — a harness jacket over a loop that loses everything
+# The durable agent (Go) — crash it mid-task and nothing happens twice
 
 > **Branch `session-7`.** Built up from nothing, one step at a time. Two
 > dependencies and nothing clever. The other branches are finished agents:
 > `session-6` is support triage on a full harness, `session-5` an English
 > teacher, `session-1` the loop with tools.
 >
-> **Step 1** was the loop: talk to a model, keep the history. **Step 2** added
-> one tool. **Step 3** a system prompt. **Step 4** clean layers. **Step 5** is
-> here: [week 3, part 1 — the brittle
-> agent](https://github.com/pjsofts/ai-engineering-1/tree/main/week3-workshop/part1-brittle),
-> where every move becomes an event and the dangerous tool runs with nothing
-> in its way.
+> **Steps 1–4** built the loop: a model, one tool, a system prompt, clean
+> layers. **Step 5** was [part 1 — the brittle
+> agent](https://github.com/pjsofts/ai-engineering-1/tree/main/week3-workshop/part1-brittle):
+> every move an event, and two failures staged on purpose. **Step 6** is here —
+> [part 2 — durable
+> execution](https://github.com/pjsofts/ai-engineering-1/tree/main/week3-workshop/part2-durable),
+> which fixes the first of them.
 
 This is a **support triage agent**. Give it work items and it classifies each
 one, reads the knowledge base, drafts a reply, and sends it. Three of those
@@ -18,8 +19,11 @@ tools are harmless. The fourth emails the customer.
 
 ```sh
 # needs OPENROUTER_API_KEY in .env
-go run . -sample     # the three sample items, one shot
-go run .             # or talk to it
+go run . -sample          # the three sample items, one shot
+go run .                  # recover anything that crashed, then talk to it
+go run . -list            # what the runtime is holding
+go run . -audit           # did any work happen twice?
+go run . -crash-at 2      # die mid-task, after real side effects
 ```
 
 ```
@@ -31,25 +35,133 @@ go run .             # or talk to it
   ✔  workflow.completed    6db483e3  {"output":"I processed three work items…"}
 ```
 
-## It is wrong on purpose
+## One failure fixed, one to go
 
-Read the two `sendReply` lines again. It "really emails the customer", it
-cannot be recalled, and between *requested* and *completed* there is nothing:
-no policy, no human, no record that it happened. The model asked, and the mail
-went out in the same millisecond.
+Part 1 staged two failures deliberately. This part answers the first.
 
-That is one of two failures staged here deliberately:
+| | part 1 | now |
+|---|---|---|
+| **State is a slice** | kill the process and the conversation is gone; start again and everything runs a second time | a workflow is a file, every model turn and tool call is a checkpointed step, and a resumed run replays them from disk |
+| **`sendReply` is unmediated** | runs the instant the model asks: no policy, no human, no record | **still true.** There is now a *record* — the event log — but nothing in the way |
 
-| what is broken | what it costs you |
-|---|---|
-| **The state is a slice.** `Agent.history` lives in memory and nowhere else | Kill the process and the conversation is gone — mid-task, mid-spend, mid-`sendReply`, with no way to know which. Start again and everything runs a second time |
-| **The dangerous tool is unmediated.** `sendReply` runs the instant it is requested | Nothing asks, nothing checks, nothing is written down. There is no log to audit and no way to tell a first send from a second |
+So the remaining hole is narrower and sharper: the agent can no longer email
+a customer *twice by accident*. It can still email them *once without asking*.
+That is what part 7's approval gate is for.
 
-Neither is an oversight, and neither is fixed by being careful. The prompt is
-the only thing currently standing between the model and an irreversible
-action, and *a prompt is not a control*. Both failures are what the harness
-gets built to answer — and feeling them once is cheaper than being told about
-them.
+## Durable execution (`internal/durable`)
+
+The whole mechanism is one method:
+
+```go
+func Step[T any](w *Workflow, name string, fn func() (T, error)) (T, error) {
+    if raw, cached := w.steps[name]; cached {
+        return decode[T](raw), nil       // no model call, no side effect, no cost
+    }
+    out, err := fn()                     // non-determinism lives HERE
+    if err != nil {
+        return zero, err                 // a FAILED step is never checkpointed
+    }
+    w.steps[name] = encode(out)
+    w.save()                             // checkpoint BEFORE moving on
+    return out, nil
+}
+```
+
+A workflow is a JSON file in `.harness/wf/<id>.json`. A step is a named unit
+of work whose result is written down the instant it finishes. To recover you
+**re-run the workflow body** — completed steps return their cached result
+without executing, and execution races forward to exactly where it died.
+
+There is no separate recovery path. **Resuming is running.**
+
+That only works if the body is *deterministic*, which is the golden rule of
+durable workflows: everything non-deterministic — the model call, the tool
+call, the clock — happens inside a step, and everything outside one is rebuilt
+identically on replay. It is also why the agent no longer keeps a conversation
+in a field. A run's messages are local, rebuilt from the workflow's own input
+and its steps, so a fresh process replays them exactly. The cost is that the
+REPL stops remembering across turns; each line is a task now.
+
+Three details that are the difference between this working and looking like it
+works:
+
+- **A failed step is never checkpointed.** Pinning a failure would make the
+  crash permanent, and retrying the workflow has to mean retrying what broke.
+- **Saves are temp-file-and-rename.** The failure this package exists to
+  prevent is a crash at the worst possible moment; a torn state file turns one
+  lost step into an unrecoverable workflow.
+- **A corrupt file fails loudly** rather than quietly starting over — since
+  starting over is precisely the bug.
+
+## Watch it crash
+
+```sh
+rm -rf .harness
+go run . -sample -crash-at 2
+```
+
+```
+  ▪  step.completed        bb657985  {"name":"tool-call_ViS34Cf…"}
+  ▪  step.completed        bb657985  {"name":"tool-call_3EGOyEB…"}
+  💥 simulated crash before step 2 — the process is gone.
+```
+
+Eight steps had completed. Real tool calls ran. The process is dead.
+
+```sh
+go run . -list
+#  ID         STATUS    STEPS  TASK
+#  bb657985   running   8      Handle these work items: - item-1 (customer_mes…
+```
+
+`running` with nobody running it — that is what crashed looks like. Now just
+start the agent again. **You are not asked to do anything:**
+
+```
+recovering bb657985 from its last completed step…
+  ⟲  workflow.resumed      bb657985  {"input":"Handle these work items:…"}
+  ⏩  step.cached           bb657985  {"name":"model-00"}
+  ⏩  step.cached           bb657985  {"name":"tool-call_Wh2R6I7…"}
+  ⏩  step.cached           bb657985  {"name":"model-01"}
+  ⏩  step.cached           bb657985  {"name":"tool-call_ViS34Cf…"}
+  ▪  step.completed        bb657985  {"name":"model-02","ms":3461}
+  ⚙  tool.requested        bb657985  {"name":"draftReply",…}
+  ✔  workflow.completed    bb657985  {"output":"Here's what I did…"}
+```
+
+Every `⏩` is work that did not happen again: a model turn not re-billed, a
+tool call not re-run. Then live steps carry it to the end.
+
+## Proving it: `-audit`
+
+Watching it recover is not the same as knowing nothing ran twice. The event
+log already holds the answer, so the check is a read rather than an
+instrument:
+
+```
+.harness/events.jsonl — 68 events across 1 workflows
+
+  step.cached            25
+  step.completed         16
+  tool.requested         12
+  workflow.resumed       2
+  workflow.started       1
+
+  tool calls executed    12
+  steps replayed         25  (work a resumed run did not redo)
+  repeated side effects  0  ✔ nothing ran twice
+```
+
+That run survived two crashes and still sent each reply once.
+
+The measurement is `tool.requested` grouped by the model's own **call id**, and
+it works because of where that event is emitted: *inside* the tool's
+checkpointed step. A replay does not re-run the step, so it does not re-emit
+it — one line per call id means the tool ran once, ever. Emit it outside the
+step and every successful recovery would look like a duplicate.
+
+A tool **name** repeating is normal: three items, three `sendReply` calls. A
+**call** repeating is a customer who got two emails.
 
 ## Everything is an event (`internal/events`)
 
@@ -60,12 +172,16 @@ sink decides what they look like:
 type Emitter interface{ Emit(Event) }
 ```
 
-Today there is exactly one sink — a `Console` that renders a glyph, the type,
-the workflow id, and whatever detail the event carries. But the reason to
-build it this way is not prettier output. Progress that exists only as a
-`fmt.Println` is invisible to everything except a human watching the screen.
-An event is a value: it can be counted, written to a file, pushed down a
-socket, or replayed. Every later sink is an addition rather than a rewrite.
+There are two sinks now, behind a `Bus` that fans out to both: a `Console`
+that renders a glyph, the type, the workflow id and the detail, and a `JSONL`
+file that outlives the process. Adding the second one changed nothing else,
+which was the whole point of making events values in the first place.
+
+The reason to build it this way is not prettier output. Progress that exists
+only as a `fmt.Println` is invisible to everything except a human watching the
+screen. An event is a value: it can be counted, written to a file, pushed down
+a socket, or read back — and because each line carries a timestamp and a
+workflow id, `-audit` is a script over a file rather than new instrumentation.
 
 The glyph table is deliberately wider than what anything emits —
 `agent.handoff`, `approval.requested`, `plan.created`, `subagent.*` — because
@@ -73,8 +189,9 @@ that map is the roadmap, and a name reserved now cannot be spelled two ways
 later.
 
 One `Ask` is one **workflow**, with an eight-character id that every event in
-the run carries. It is also the only thing about a run that outlives it, which
-is another way of saying nothing does.
+the run carries — and, since part 2, a file on disk that carries the same id.
+Two runs interleaved in the log can still be told apart, and a run that died
+can still be found.
 
 ## The toolbox (`internal/tools/support.go`)
 
@@ -114,23 +231,29 @@ anything outer, so each layer can be tested — or replaced — on its own.
 main.go                    wire the pieces together, then run
   └── internal/
         ui/       Console  the REPL. Owns stdin
-        agent/    Agent    the loop, the conversation, the system prompt
+        agent/    Agent    the loop and the system prompt
         tools/    Registry the Tool interface, and every tool
-        events/   Event    the typed stream, and the glyphed console
+        durable/  Workflow checkpoint · crash · resume          ┐ the
+        events/   Event    the typed stream, console and log    ┘ harness
         llm/               the one place the OpenRouter client is built
 ```
 
-`events` sits *under* the agent and imports nothing of ours, so any layer may
-emit and none of them has to know where the events go.
+`durable` and `events` sit *under* the agent — they know nothing about agents,
+tools or terminals, which is what lets each be used and tested on its own.
+Everything the runtime owns lives in `.harness/` as plain files: a workflow is
+a JSON file, the log is JSONL. Swapping in Postgres later changes the storage,
+not a single idea above it.
 
 `main.go` is now four lines of wiring, outermost last:
 
 ```go
-client    := llm.NewOpenRouter(apiKey)
-toolbox   := tools.Default()
-assistant := agent.New(client, Model, toolbox).
-                 WithEvents(events.NewConsole(os.Stdout))
+bus       := events.Bus{events.NewConsole(os.Stdout), events.NewJSONL(log)}
+store, _  := durable.NewStore(harnessPath("wf"), bus)
+assistant := agent.New(llm.NewOpenRouter(apiKey), Model, tools.Default()).
+                 WithEvents(bus).
+                 WithStore(store)
 
+recoverPending(assistant, store)     // recover FIRST, then take new work
 ui.New(os.Stdin, os.Stdout).Run(context.Background(), assistant)
 ```
 
@@ -149,21 +272,26 @@ Three seams carry the whole thing:
   writable to disk later. The SDK's union types live in two translation
   functions at the boundary.
 
-And one more seam: **`events.Emitter`**. The agent does not print — it emits,
-and a nil emitter is a silent agent rather than a broken one. That is what
-lets the same loop be driven later by a test, a script, or a browser without
-touching a line of it.
+Two more seams: **`events.Emitter`** and **`agent.Store`**. The agent does not
+print — it emits — and it does not know what durability is, it just opens a
+workflow. Both are optional: a nil emitter is a silent agent, and **a nil
+store is the part 1 agent**, still there and still runnable, because the
+durability claim means nothing until you can run the other one.
 
 ## The loop (`internal/agent`)
 
 ```go
+working := []Msg{{system, SystemPrompt}, {user, wf.Input()}}
+
 for step := 0; step < maxSteps; step++ {
-    reply := think(ctx)                  // history + tool specs out, one reply back
-    history = append(history, reply)
+    reply := durable.Step(wf, "model-NN", think)   // checkpointed
+    working = append(working, reply)
     if len(reply.ToolCalls) == 0 {
-        return reply.Text                // it answered: done
+        return reply.Text                          // it answered: done
     }
-    runTools(ctx, wf, reply.ToolCalls)   // it asked: do the work, append results
+    for _, call := range reply.ToolCalls {
+        durable.Step(wf, "tool-"+call.ID, run)     // checkpointed
+    }
 }
 ```
 
@@ -174,9 +302,9 @@ Three things the loop owns rather than the model:
 - **Dispatch always returns a string.** A failure becomes `error: …` in the
   transcript, so the model can try something else. An error that propagated
   would end the conversation.
-- **A failed turn rewinds the history** to where it started. A turn appends
-  several messages; a tool call left with no result is a conversation the API
-  refuses on the next question.
+- **A failed run keeps its completed steps.** The workflow file stays on disk
+  marked `failed`, which is what makes the next attempt cheap — it replays
+  what already worked and retries only what broke.
 
 ## The system prompt
 
@@ -215,12 +343,12 @@ purpose, and each one is a session's worth of work:
 
 | It cannot… | What fixes it |
 |---|---|
-| survive being killed mid-task | **durable execution** — checkpoint each step, so a resumed run replays instead of repeating |
-| be trusted with `sendReply` | **human-in-the-loop** — a gate the dangerous tool has to pass, and that can wait for days |
-| tell you what it did yesterday | **a durable event log** — the stream exists, but only ever reaches a terminal |
-| stay affordable in a long chat | **context management** — the history is sent whole and grows forever |
+| be trusted with `sendReply` | **human-in-the-loop** — a gate the dangerous tool has to pass, and that can wait for days without holding a process open |
+| run model-written code safely | **a sandbox** — one mediated door, with the environment stripped and a timer |
+| hold a conversation across tasks | **memory** — history, state and context kept apart, and compacted against a token budget |
+| stay affordable in a long task | **context management** — the messages are sent whole and grow all run |
 | be shown to be working | **evals** — no tests, no scores, nothing but your own reading of the replies. The seams above are what make them cheap to write: a stub `ToolBox` is three lines |
 
 Add them one at a time, and let each earn its place by fixing something you
-have actually felt. The first two are what this part was built to make you
-feel.
+have actually felt. The first one is what part 1 was built to make you feel,
+and it is the only one of the original two still standing.

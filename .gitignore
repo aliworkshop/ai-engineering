@@ -15,3 +15,6 @@ package-lock.json
 
 # the binary, if you go build without -o
 /ai-engineering-course
+
+# the harness's own state: workflows and the event log
+.harness/
