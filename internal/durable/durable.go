@@ -90,7 +90,7 @@ func (s *Store) Open(id, input string) (*Workflow, error) {
 	case err == nil:
 		// A corrupt file fails loudly. Starting over silently would repeat
 		// every side effect the file was written to prevent.
-		if err := json.Unmarshal(raw, &w.st); err != nil {
+		if err = json.Unmarshal(raw, &w.st); err != nil {
 			return nil, fmt.Errorf("durable: workflow %s is corrupt: %w", id, err)
 		}
 		w.resumed = true
@@ -158,10 +158,10 @@ func (w *Workflow) save() error {
 	}
 	final := w.store.path(w.st.ID)
 	tmp := final + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o644); err != nil {
+	if err = os.WriteFile(tmp, raw, 0o644); err != nil {
 		return fmt.Errorf("durable: write workflow %s: %w", w.st.ID, err)
 	}
-	if err := os.Rename(tmp, final); err != nil {
+	if err = os.Rename(tmp, final); err != nil {
 		return fmt.Errorf("durable: commit workflow %s: %w", w.st.ID, err)
 	}
 	return nil
