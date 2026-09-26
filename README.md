@@ -28,7 +28,7 @@ export DBOS_SYSTEM_DATABASE_URL="postgresql://postgres:secret@localhost:5432/age
 
 go run . -sample          # the three sample items, one shot
 go run .                  # recover anything that crashed, then talk to it
-go run . -recover         # launch and do nothing else; watch it finish itself
+go run . -recover         # finish what crashed, then carry on that conversation
 go run . -inspect [id]    # the engine's own receipts, out of Postgres
 go run . -audit           # did any work happen twice?
 go run . -crash-at 2      # die mid-task, after real side effects
@@ -145,6 +145,50 @@ the drafts and the sends go out. The eight pre-crash steps are not in that
 output because they did not happen again — see `-inspect` below. `-recover`
 returns the moment those runs finish; run it again and it says there is nothing
 left, in under a second.
+
+### …and then you can keep talking
+
+`-recover` drops you into the REPL holding the conversation it just finished:
+
+```
+recovering 13bea96b-3b26-41ba-97c8-b90b654f82b2 from its last completed step…
+  ⚙  tool.requested   …  {"name":"sendReply",…}
+  ✔  workflow.completed …
+
+carrying on the conversation from 13bea96b-3b26-41ba-97c8-b90b654f82b2.
+
+you> what exactly did you send to item-2? quote the draft.
+
+agent> For item-2, I sent the following draft reply:
+       "Thank you for reporting the issue with the export button on Safari.
+        It is a known bug (TICKET-4412) and a workaround is to either use
+        Chrome or utilize the CSV export option."
+```
+
+Nothing was held in memory to make that work. The process that drafted that
+reply is gone. Every model turn and every tool result was written down because
+they *had* to be, in order to replay — and that same record is a transcript.
+`Continue` reads it back and seeds the next turn with it.
+
+The seeding is the part worth looking at. A conversation cannot live in a field
+on some object, because a recovered run has no such object; so it travels in
+the workflow's **input**:
+
+```go
+type Task struct {
+    Seed []agent.Msg   // the conversation so far
+    Text string        // what was just asked
+}
+```
+
+Each turn is still its own self-contained workflow, still rebuildable from what
+is checkpointed, still deterministic on replay. A `Session` is a convenience
+for the person typing, not a place state hides.
+
+One detail that is easy to get wrong: an assistant message asking for tools is
+only legal if a result for **each** of them follows it. Rebuilding half a pair
+produces a conversation the next model call refuses outright, so `transcript`
+drops a model turn whose results it cannot find rather than emitting it alone.
 
 One trap worth knowing, because it cost a bug here: **a crashed workflow is
 `PENDING` only until the next `Launch`.** Recovery's first act is to move it to
@@ -401,9 +445,9 @@ purpose, and each one is a session's worth of work:
 | It cannot… | What fixes it |
 |---|---|
 | be trusted with `sendReply` | **human-in-the-loop** — a gate the dangerous tool has to pass, and that can wait for days without holding a process open. DBOS has the pieces already: `send`/`recv` and a durable `sleep` |
+| keep a long conversation affordable | **context management** — a session's seed grows with every turn and is sent whole |
 | run model-written code safely | **a sandbox** — one mediated door, with the environment stripped and a timer |
 | hold a conversation across tasks | **memory** — history, state and context kept apart, and compacted against a token budget |
-| stay affordable in a long task | **context management** — the messages are sent whole and grow all run |
 | be shown to be working | **evals** — no tests, no scores, nothing but your own reading of the replies. The seams above are what make them cheap to write: a stub `ToolBox` is three lines |
 
 Add them one at a time, and let each earn its place by fixing something you

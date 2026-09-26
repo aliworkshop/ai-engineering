@@ -18,7 +18,7 @@
 //	go run .                 recover what crashed, then talk to it
 //	go run . -sample         work the three sample items, then exit
 //	go run . -task "..."     work one task, then exit
-//	go run . -recover        launch and do nothing else; watch it finish itself
+//	go run . -recover        finish what crashed, then carry on that conversation
 //	go run . -inspect [id]   the engine's own receipts, out of Postgres
 //	go run . -audit          did any work happen twice?
 //	go run . -crash-at 2     die mid-run, after real side effects
@@ -62,7 +62,7 @@ func harnessPath(parts ...string) string {
 func main() {
 	sample := flag.Bool("sample", false, "work the three sample items, then exit")
 	task := flag.String("task", "", "work one task, then exit")
-	recover := flag.Bool("recover", false, "launch and do nothing else, while DBOS replays what crashed")
+	recover := flag.Bool("recover", false, "finish what crashed, then continue that conversation in the REPL")
 	inspect := flag.Bool("inspect", false, "print the engine's own workflow receipts; add an id for its steps")
 	audit := flag.Bool("audit", false, "read the event log back and report whether any work happened twice")
 	crashAt := flag.Int("crash-at", -1, "DEMO: exit before this step, simulating a crash mid-task")
@@ -108,17 +108,31 @@ func main() {
 	switch {
 	case *inspect:
 		exitOn(engine.Inspect(flag.Arg(0)))
+
 	case *recover:
-		exitOn(engine.Recover(recoveryWindow))
+		// Finish what the last process started, then pick that conversation
+		// up and keep talking. The transcript comes out of the checkpoints,
+		// so the agent knows what it just did even though the process that
+		// did most of it is gone.
+		recovered, err := engine.Recover(recoveryWindow)
+		exitOn(err)
+		session, err := engine.Continue(recovered)
+		exitOn(err)
+		if recovered != "" {
+			fmt.Printf("\ncarrying on the conversation from %s.\n", recovered)
+		}
+		ui.New(os.Stdin, os.Stdout).Run(context.Background(), session)
+
 	case *sample || *task != "":
 		if *sample {
 			*task = agent.SampleTask
 		}
-		answer, err := engine.Ask(context.Background(), *task)
+		answer, err := engine.Session().Ask(context.Background(), *task)
 		exitOn(err)
 		fmt.Println("\nagent>", answer)
+
 	default:
-		ui.New(os.Stdin, os.Stdout).Run(context.Background(), engine)
+		ui.New(os.Stdin, os.Stdout).Run(context.Background(), engine.Session())
 	}
 }
 

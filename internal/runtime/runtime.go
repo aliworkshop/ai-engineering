@@ -87,6 +87,21 @@ type Options struct {
 // because it is one; the alternative is a workflow DBOS cannot resurrect.
 var deps Options
 
+// Task is what a workflow is given, and it is a struct rather than a string
+// for one reason: a conversation has to travel INSIDE the input.
+//
+// The body must be deterministic, so it cannot read a seed from a field on
+// some object in this process — a recovered run has no such object. Putting
+// the prior messages in the input means they are checkpointed with everything
+// else, and a replay a week later rebuilds exactly the same context.
+type Task struct {
+	// Seed is the conversation so far. Empty for a fresh task.
+	Seed []agent.Msg `json:"seed,omitempty"`
+
+	// Text is what the user just asked.
+	Text string `json:"text"`
+}
+
 // Runtime is a connected execution engine. Durable when a database was
 // configured, in memory when not.
 type Runtime struct {
@@ -146,10 +161,9 @@ func (r *Runtime) Durable() bool { return r.dctx != nil }
 // Close shuts the engine down.
 func (r *Runtime) Close() { r.shutdown() }
 
-// Ask works one task and returns the answer. It satisfies what the console
-// needs, so the terminal drives the runtime without knowing which engine is
-// underneath.
-func (r *Runtime) Ask(ctx context.Context, task string) (string, error) {
+// run works one task and returns the answer. Sessions call it; nothing else
+// should, because a task with no session is a conversation with no memory.
+func (r *Runtime) run(ctx context.Context, task Task) (string, error) {
 	if r.dctx == nil {
 		return loop(plainSteps{ctx: ctx, wid: newRunID()}, task)
 	}
@@ -172,21 +186,24 @@ func (r *Runtime) Ask(ctx context.Context, task string) (string, error) {
 // It also explains the one thing that makes recovery silently do nothing: a
 // workflow written by a different application version. DBOS will not touch
 // those, so waiting on one would hang until the timeout for no reason.
-func (r *Runtime) Recover(timeout time.Duration) error {
+// It returns the id of the last workflow it saw through to an answer, so the
+// caller can carry that conversation into a session and keep talking.
+func (r *Runtime) Recover(timeout time.Duration) (string, error) {
 	if r.dctx == nil {
 		fmt.Println("nothing to recover: this runtime is not durable.")
-		return nil
+		return "", nil
 	}
 
 	pending, err := dbos.ListWorkflows(r.dctx, dbos.WithFilterStatus(unfinished...))
 	if err != nil {
-		return err
+		return "", err
 	}
 	if len(pending) == 0 {
 		fmt.Println("nothing to recover: no workflow was left unfinished.")
-		return nil
+		return "", nil
 	}
 
+	var recovered string
 	for _, wf := range pending {
 		if wf.ApplicationVersion != AppVersion {
 			fmt.Printf("  %s was written by app version %q, not %q — DBOS will not recover it.\n",
@@ -197,16 +214,17 @@ func (r *Runtime) Recover(timeout time.Duration) error {
 
 		answer, err := awaitResult(r.dctx, wf.ID, timeout)
 		switch {
-		case err == errStillRunning:
-			fmt.Printf("  %s did not finish within %s — it stays PENDING and the next launch picks it up.\n",
+		case errors.Is(err, errStillRunning):
+			fmt.Printf("  %s did not finish within %s — it stays unfinished and the next launch picks it up.\n",
 				wf.ID, timeout)
 		case err != nil:
 			fmt.Printf("  %s failed: %v\n", wf.ID, err)
 		default:
 			fmt.Println("\nagent>", answer)
+			recovered = wf.ID
 		}
 	}
-	return nil
+	return recovered, nil
 }
 
 // unfinished is every status that is not an outcome.
@@ -259,7 +277,7 @@ func awaitResult(dctx dbos.Context, workflowID string, timeout time.Duration) (s
 
 // work is the durable entry point: the function DBOS registers, runs, and
 // resurrects. It is a plain function for exactly that reason.
-func work(ctx dbos.Context, task string) (string, error) {
+func work(ctx dbos.Context, task Task) (string, error) {
 	return loop(dbosSteps{ctx: ctx}, task)
 }
 
@@ -271,21 +289,23 @@ func work(ctx dbos.Context, task string) (string, error) {
 // this slice, this counter, this if — is rebuilt identically on a replay,
 // which is the golden rule of durable workflows and the only reason recovery
 // can be this simple.
-func loop(s stepper, task string) (string, error) {
+func loop(s stepper, task Task) (string, error) {
 	// Emitting through a step means workflow.started appears exactly ONCE per
 	// workflow, however many times the body is replayed. An event that
 	// re-fires on every recovery is a log that cannot be counted.
 	_, _ = s.text("started", func(context.Context) (string, error) {
 		events.Emit(deps.Bus, events.Event{
-			Type: events.WorkflowStarted, Workflow: s.id(), Input: task,
+			Type: events.WorkflowStarted, Workflow: s.id(), Input: task.Text,
 		})
 		return "", nil
 	})
 
-	working := []agent.Msg{
-		{Role: "system", Text: agent.SystemPrompt},
-		{Role: "user", Text: task},
-	}
+	// The context is rebuilt from the input alone, which is what makes a
+	// replay exact: same seed, same question, same messages, every time.
+	working := make([]agent.Msg, 0, len(task.Seed)+2)
+	working = append(working, agent.Msg{Role: "system", Text: agent.SystemPrompt})
+	working = append(working, task.Seed...)
+	working = append(working, agent.Msg{Role: "user", Text: task.Text})
 
 	for i := 0; i < maxSteps; i++ {
 		maybeCrash(i)
