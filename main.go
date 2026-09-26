@@ -17,6 +17,12 @@
 //	go run . -resume <id>    replay one workflow
 //	go run . -audit          did any work happen twice?
 //	go run . -crash-at 2     die mid-run, after real side effects
+//
+// And the same agent on somebody else's durable engine, for comparison:
+//
+//	go run . -dbos -sample        run it with DBOS Transact holding the checkpoints
+//	go run . -dbos                launch and recover: no task, no id, it finishes itself
+//	go run . -dbos-inspect [id]   the engine's own receipts, out of Postgres
 package main
 
 import (
@@ -26,10 +32,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/joho/godotenv"
 
 	"github.com/aliworkshop/ai-engineering-course/internal/agent"
+	"github.com/aliworkshop/ai-engineering-course/internal/dbosrun"
 	"github.com/aliworkshop/ai-engineering-course/internal/durable"
 	"github.com/aliworkshop/ai-engineering-course/internal/events"
 	"github.com/aliworkshop/ai-engineering-course/internal/llm"
@@ -57,6 +65,8 @@ func main() {
 	resume := flag.String("resume", "", "replay a workflow that stopped early")
 	audit := flag.Bool("audit", false, "read the event log back and report whether any work happened twice")
 	crashAt := flag.Int("crash-at", -1, "DEMO: exit before this step, simulating a crash mid-task")
+	useDBOS := flag.Bool("dbos", false, "run on DBOS Transact instead of internal/durable; with no task, launch and recover")
+	inspect := flag.Bool("dbos-inspect", false, "print DBOS's own workflow receipts out of Postgres; add an id for its steps")
 	flag.Parse()
 
 	_ = godotenv.Load()
@@ -84,6 +94,32 @@ func main() {
 	bus := events.Bus{
 		events.NewConsole(os.Stdout),
 		events.NewJSONL(harnessPath("events.jsonl")),
+	}
+
+	// The same agent, the same tools, the same events — someone else's engine
+	// underneath. See internal/dbosrun for the mapping between the two.
+	if *inspect || *useDBOS {
+		opt := dbosrun.Options{
+			Client: llm.NewOpenRouter(apiKey), Model: Model,
+			Registry: tools.Default(), Bus: bus, CrashAt: *crashAt,
+		}
+		if *inspect {
+			exitOn(dbosrun.Inspect(context.Background(), opt, flag.Arg(0)))
+			return
+		}
+		if *sample {
+			*task = agent.SampleTask
+		}
+		if *task == "" {
+			// No task and no id: launch, and let DBOS find what it left
+			// PENDING in Postgres. This is the whole demo.
+			exitOn(dbosrun.Recover(context.Background(), opt, 30*time.Second))
+			return
+		}
+		answer, err := dbosrun.Run(context.Background(), opt, *task)
+		exitOn(err)
+		fmt.Println("\nagent>", answer)
+		return
 	}
 
 	store, err := durable.NewStore(harnessPath("wf"), bus)
