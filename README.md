@@ -163,6 +163,89 @@ step and every successful recovery would look like a duplicate.
 A tool **name** repeating is normal: three items, three `sendReply` calls. A
 **call** repeating is a customer who got two emails.
 
+## The same agent on somebody else's engine (`internal/dbosrun`)
+
+`internal/durable` is about a hundred and fifty lines. Having built it, it is
+worth seeing the industrial version — not because [DBOS
+Transact](https://docs.dbos.dev/) is better, but because the thing you just
+built *is* the real idea, and here it is with the volume turned up.
+
+```sh
+# a local Postgres; the library is MIT and runs entirely on your machine
+export DBOS_SYSTEM_DATABASE_URL="postgresql://postgres:secret@localhost:5432/agent_dbos?sslmode=disable"
+
+go run . -dbos -sample        # the same task, checkpointed into Postgres
+go run . -dbos                # no task, no id — launch, and it finishes itself
+go run . -dbos-inspect [id]   # the engine's own receipts
+```
+
+The mapping is nearly line for line:
+
+| `internal/durable` | DBOS Transact |
+|---|---|
+| `durable.Store` + `.harness/wf/*.json` | `dbos.NewContext` + Postgres tables |
+| `durable.Step(wf, name, fn)` | `dbos.RunAsStep(ctx, fn, WithStepName(name))` |
+| `store.Pending` + `recoverPending` | automatic recovery inside `dbos.Launch` |
+| `events.jsonl` + `-audit` | `ListWorkflows` / `GetWorkflowSteps` |
+| — | queues, timeouts, fork-from-step, cancel, durable sleep |
+
+The golden rule is identical: the body must be deterministic, and everything
+non-deterministic lives inside a step. **DBOS enforces it harder** — our steps
+are keyed by *name*, DBOS matches them by *position*, so the body must issue
+the same steps in the same order on replay.
+
+### The moment worth pausing on
+
+Crash it, then launch it with **no task and no workflow id**:
+
+```sh
+go run . -dbos -sample -crash-at 2
+#   💥 simulated crash before step 2 — the process is gone.
+
+go run . -dbos                 # ← no arguments at all
+```
+
+DBOS finds the `PENDING` workflow in Postgres, resumes it from the exact step
+where the process died, and the drafts and the sends go out. Then ask the
+engine for its receipts:
+
+```
+  #    STEP                                     MS       OUTPUT
+  6    tool-call_288NASSg7jambza5xJ0b8xuN       5        "{\"articles\":[\"The Safari export failure…
+  7    tool-call_YWcms49wWWovtsJXGJE68n4i       4        "{\"articles\":[\"Team plans are $20/seat…
+  ---- 7s gap: the process was dead here; everything above was replayed from Postgres ----
+  8    model-02                                 2649     {"role":"assistant","tool_calls":[…
+```
+
+That gap line is the whole lesson in one row. In a live run consecutive steps
+are *milliseconds* apart — everything slow is itself a step, so it sits inside
+the window rather than between two. A gap you can see is a gap where the
+program was not running.
+
+### Three things that are not obvious
+
+- **The workflow body is a plain registered function, and its dependencies are
+  a package-level var.** Recovery happens inside `Launch` with no caller in
+  sight, so the body cannot close over a client passed in at call time. It
+  reads like a global because it is one; the alternative is a workflow DBOS
+  cannot resurrect.
+- **The application version is pinned.** By default it is a hash of your code,
+  and DBOS only recovers workflows whose version matches — so an edit between
+  the crash and the recovery silently orphans the parked workflow. In
+  production that default is a feature: a bad deploy must not half-replay
+  workflows written by different code.
+- **The engine's logger is silenced at shutdown, and only then.** Cancelling
+  the context makes the queue runner report its in-flight work as failed —
+  true, dull, and indistinguishable from a crash to anyone watching.
+
+### What it costs
+
+The agent's own harness needs two dependencies and a directory. This needs a
+database, a driver, and a library that brings about forty modules with it —
+`go.mod` goes from two direct dependencies to three, and `go list -m all` from
+a handful to seventy-odd. That trade is exactly why the hand-rolled version is
+worth understanding first, and why `-dbos` is a flag rather than the default.
+
 ## Everything is an event (`internal/events`)
 
 The harness never prints its feelings. It emits typed `Event` values, and a
@@ -235,6 +318,7 @@ main.go                    wire the pieces together, then run
         tools/    Registry the Tool interface, and every tool
         durable/  Workflow checkpoint · crash · resume          ┐ the
         events/   Event    the typed stream, console and log    ┘ harness
+        dbosrun/           the same agent, on DBOS Transact (opt-in)
         llm/               the one place the OpenRouter client is built
 ```
 
