@@ -23,6 +23,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -159,20 +160,101 @@ func (r *Runtime) Ask(ctx context.Context, task string) (string, error) {
 	return handle.GetResult()
 }
 
-// Wait blocks, which is all recovery needs from us.
+// Recover waits for whatever the last process left unfinished, and returns as
+// soon as it is done.
 //
-// This is the moment worth pausing on. Recovery takes no task and no workflow
-// id: New already launched, DBOS already found every PENDING workflow in
-// Postgres and resumed it from the exact step where the process died. All that
-// is left is to stay alive while the drafts and the sends go out. None of the
-// pre-crash tool calls run twice.
-func (r *Runtime) Wait(d time.Duration) {
+// The recovery itself already happened: New launched, and DBOS found every
+// PENDING workflow in Postgres and resumed it from the exact step where the
+// process died. All this does is stay alive until those runs finish — by
+// waiting on their actual results, not by sleeping for a fixed window and
+// hoping. A run that finishes in four seconds returns in four seconds.
+//
+// It also explains the one thing that makes recovery silently do nothing: a
+// workflow written by a different application version. DBOS will not touch
+// those, so waiting on one would hang until the timeout for no reason.
+func (r *Runtime) Recover(timeout time.Duration) error {
 	if r.dctx == nil {
 		fmt.Println("nothing to recover: this runtime is not durable.")
-		return
+		return nil
 	}
-	fmt.Printf("launched — DBOS is recovering anything left PENDING (waiting %s)\n", d)
-	time.Sleep(d)
+
+	pending, err := dbos.ListWorkflows(r.dctx, dbos.WithFilterStatus(unfinished...))
+	if err != nil {
+		return err
+	}
+	if len(pending) == 0 {
+		fmt.Println("nothing to recover: no workflow was left unfinished.")
+		return nil
+	}
+
+	for _, wf := range pending {
+		if wf.ApplicationVersion != AppVersion {
+			fmt.Printf("  %s was written by app version %q, not %q — DBOS will not recover it.\n",
+				wf.ID, wf.ApplicationVersion, AppVersion)
+			continue
+		}
+		fmt.Printf("recovering %s from its last completed step…\n", wf.ID)
+
+		answer, err := awaitResult(r.dctx, wf.ID, timeout)
+		switch {
+		case err == errStillRunning:
+			fmt.Printf("  %s did not finish within %s — it stays PENDING and the next launch picks it up.\n",
+				wf.ID, timeout)
+		case err != nil:
+			fmt.Printf("  %s failed: %v\n", wf.ID, err)
+		default:
+			fmt.Println("\nagent>", answer)
+		}
+	}
+	return nil
+}
+
+// unfinished is every status that is not an outcome.
+//
+// PENDING alone is not enough, and getting that wrong is easy: a crashed
+// workflow is PENDING only until the next Launch, whose recovery pass moves it
+// to ENQUEUED so a worker can pick it up. Since Launch happens in New — before
+// anything here runs — by the time we look, the thing we are about to wait for
+// has usually already left the status we were filtering on.
+var unfinished = []dbos.WorkflowStatusType{
+	dbos.WorkflowStatusPending,
+	dbos.WorkflowStatusEnqueued,
+	dbos.WorkflowStatusDelayed,
+}
+
+// errStillRunning means the timeout won the race, not that anything is wrong.
+var errStillRunning = errors.New("still running")
+
+// awaitResult blocks on one workflow's result, with a ceiling.
+//
+// GetResult blocks until the workflow reaches a terminal state, which is
+// exactly the semantics we want and the reason this is not a poll. The timeout
+// is there for the case where the run cannot finish at all — the model API is
+// down, say — so a CLI does not hang forever. Losing the goroutine is fine: we
+// are about to exit, and the workflow is safe in Postgres either way.
+func awaitResult(dctx dbos.Context, workflowID string, timeout time.Duration) (string, error) {
+	type outcome struct {
+		answer string
+		err    error
+	}
+	done := make(chan outcome, 1)
+
+	go func() {
+		handle, err := dbos.RetrieveWorkflow[string](dctx, workflowID)
+		if err != nil {
+			done <- outcome{err: err}
+			return
+		}
+		answer, err := handle.GetResult()
+		done <- outcome{answer: answer, err: err}
+	}()
+
+	select {
+	case got := <-done:
+		return got.answer, got.err
+	case <-time.After(timeout):
+		return "", errStillRunning
+	}
 }
 
 // work is the durable entry point: the function DBOS registers, runs, and

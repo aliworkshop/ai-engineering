@@ -50,9 +50,10 @@ const Model = "openai/gpt-4o-mini"
 // one file in it instead of a tree.
 const harnessDir = ".harness"
 
-// recoveryWindow is how long -recover stays alive while DBOS replays in the
-// background. Long enough for a stalled run to finish its model calls.
-const recoveryWindow = 60 * time.Second
+// recoveryWindow is the ceiling on -recover, not its duration: it returns as
+// soon as the recovered runs finish. The ceiling exists for the run that
+// cannot finish at all.
+const recoveryWindow = 2 * time.Minute
 
 func harnessPath(parts ...string) string {
 	return filepath.Join(append([]string{harnessDir}, parts...)...)
@@ -108,7 +109,7 @@ func main() {
 	case *inspect:
 		exitOn(engine.Inspect(flag.Arg(0)))
 	case *recover:
-		engine.Wait(recoveryWindow)
+		exitOn(engine.Recover(recoveryWindow))
 	case *sample || *task != "":
 		if *sample {
 			*task = agent.SampleTask

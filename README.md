@@ -132,7 +132,7 @@ go run . -recover        # or just `go run .`, which recovers and then talks
 ```
 
 ```
-launched — DBOS is recovering anything left PENDING (waiting 1m0s)
+recovering 6625d36d-b151-4226-9389-13d5101d2c04 from its last completed step…
   ⚙  tool.requested        6625d36d…  {"name":"draftReply",…}
   ✓  tool.completed        6625d36d…  {"name":"draftReply",…}
   ⚙  tool.requested        6625d36d…  {"name":"sendReply",…}
@@ -140,9 +140,17 @@ launched — DBOS is recovering anything left PENDING (waiting 1m0s)
 ```
 
 Nothing was asked of you. Connecting *is* recovering: `Launch` finds every
-`PENDING` workflow, resumes it from the exact step where the process died, and
+unfinished workflow, resumes it from the exact step where the process died, and
 the drafts and the sends go out. The eight pre-crash steps are not in that
-output because they did not happen again — see `-inspect` below.
+output because they did not happen again — see `-inspect` below. `-recover`
+returns the moment those runs finish; run it again and it says there is nothing
+left, in under a second.
+
+One trap worth knowing, because it cost a bug here: **a crashed workflow is
+`PENDING` only until the next `Launch`.** Recovery's first act is to move it to
+`ENQUEUED` so a worker can pick it up — so code that waits for "the PENDING
+ones" finds nothing, having already missed them. Unfinished means `PENDING`,
+`ENQUEUED` *or* `DELAYED`.
 
 ## Proving it: `-audit` and `-inspect`
 
