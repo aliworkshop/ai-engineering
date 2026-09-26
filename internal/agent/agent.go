@@ -269,10 +269,21 @@ func (a *Agent) maybeCrash(wf *durable.Workflow, i int) {
 // think is one model call: the conversation so far goes out, with the tools
 // the model is allowed to ask for, and one reply comes back.
 func (a *Agent) think(ctx context.Context, working []Msg) (Msg, error) {
-	res, err := a.client.Chat.Send(ctx, components.ChatRequest{
-		Model:    openrouter.String(a.model),
+	return Think(ctx, a.client, a.model, working, a.tools.Specs())
+}
+
+// Think is one model call, outside the loop: given a conversation and a
+// toolset, what does the model want to do next?
+//
+// It is exported for one caller — the DBOS runner in internal/dbosrun, which
+// drives the same steps through a different durable engine. Sharing this
+// rather than letting that package write its own model call is what keeps the
+// comparison honest: the two engines are running the same agent.
+func Think(ctx context.Context, client *openrouter.OpenRouter, model string, working []Msg, specs []components.ChatFunctionTool) (Msg, error) {
+	res, err := client.Chat.Send(ctx, components.ChatRequest{
+		Model:    openrouter.String(model),
 		Messages: toSDK(working),
-		Tools:    a.tools.Specs(),
+		Tools:    specs,
 	}, nil)
 	if err != nil {
 		return Msg{}, err
