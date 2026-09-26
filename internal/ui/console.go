@@ -9,9 +9,14 @@ import (
 	"fmt"
 	"io"
 	"strings"
-
-	"github.com/aliworkshop/ai-engineering-course/internal/agent"
 )
+
+// Assistant is the only thing the terminal needs: something that answers.
+// Declared here rather than imported so the console does not know which engine
+// is underneath it, durable or not.
+type Assistant interface {
+	Ask(ctx context.Context, task string) (string, error)
+}
 
 // Console reads from one input stream and writes to one output stream.
 type Console struct {
@@ -29,7 +34,7 @@ func New(in io.Reader, out io.Writer) *Console {
 //
 // It no longer prints what the agent is doing mid-turn. The event stream does
 // that, and one channel for progress beats two that can disagree.
-func (c *Console) Run(ctx context.Context, ag *agent.Agent) {
+func (c *Console) Run(ctx context.Context, assistant Assistant) {
 	fmt.Fprintln(c.out, "Type a message, or 'exit' to quit.")
 	for {
 		fmt.Fprint(c.out, "\nyou> ")
@@ -47,7 +52,7 @@ func (c *Console) Run(ctx context.Context, ag *agent.Agent) {
 			return
 		}
 
-		answer, err := ag.Ask(ctx, input)
+		answer, err := assistant.Ask(ctx, input)
 		if err != nil {
 			fmt.Fprintln(c.out, "error:", err)
 			continue

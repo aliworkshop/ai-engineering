@@ -1,7 +1,6 @@
-package dbosrun
+package runtime
 
 import (
-	"context"
 	"fmt"
 	"time"
 
@@ -20,21 +19,18 @@ const deadGap = 2 * time.Second
 // Inspect prints the engine's own receipts: every workflow it is holding, or —
 // given an id — every step of one, with how long each took.
 //
-// This is the DBOS answer to -audit and -list, and the interesting difference
-// is that we wrote neither of them. Our version needed an event log and a
-// script over it; here the engine already recorded each step's name, output
-// and duration, because it had to in order to replay them.
-func Inspect(ctx context.Context, opt Options, workflowID string) error {
-	dctx, closeDBOS, err := Connect(ctx, opt)
-	if err != nil {
-		return err
+// The interesting thing is that we wrote none of the recording. The engine
+// already has each step's name, output and duration, because it needed them in
+// order to replay. A hand-rolled store has to be given an event log and a
+// script over it to answer the same questions.
+func (r *Runtime) Inspect(workflowID string) error {
+	if r.dctx == nil {
+		return fmt.Errorf("nothing to inspect: %s is not set, so no run was checkpointed", DatabaseEnv)
 	}
-	defer closeDBOS()
-
 	if workflowID == "" {
-		return listWorkflows(dctx)
+		return listWorkflows(r.dctx)
 	}
-	return listSteps(dctx, workflowID)
+	return listSteps(r.dctx, workflowID)
 }
 
 func listWorkflows(dctx dbos.Context) error {

@@ -1,7 +1,12 @@
 // Command agent is a support-triage agent you talk to in a loop — and,
-// underneath it, a harness: every move is an event, and every model turn and
+// underneath it, a runtime: every move is an event, and every model turn and
 // tool call is a checkpointed step, so a crash mid-task costs a replay rather
 // than a second email to the customer.
+//
+// Durability is DBOS Transact, holding its state in Postgres. Point
+// DBOS_SYSTEM_DATABASE_URL at a database and the agent is durable and recovers
+// itself on startup; leave it unset and the same loop runs in memory,
+// checkpointing nothing and saying so.
 //
 // It is still missing the other half. sendReply emails a customer the instant
 // the model asks, with no human in the way. That is what Part 7 is for.
@@ -13,16 +18,10 @@
 //	go run .                 recover what crashed, then talk to it
 //	go run . -sample         work the three sample items, then exit
 //	go run . -task "..."     work one task, then exit
-//	go run . -list           what the runtime is holding
-//	go run . -resume <id>    replay one workflow
+//	go run . -recover        launch and do nothing else; watch it finish itself
+//	go run . -inspect [id]   the engine's own receipts, out of Postgres
 //	go run . -audit          did any work happen twice?
 //	go run . -crash-at 2     die mid-run, after real side effects
-//
-// And the same agent on somebody else's durable engine, for comparison:
-//
-//	go run . -dbos -sample        run it with DBOS Transact holding the checkpoints
-//	go run . -dbos                launch and recover: no task, no id, it finishes itself
-//	go run . -dbos-inspect [id]   the engine's own receipts, out of Postgres
 package main
 
 import (
@@ -31,16 +30,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
 
-	"github.com/aliworkshop/ai-engineering-course/internal/agent"
-	"github.com/aliworkshop/ai-engineering-course/internal/dbosrun"
-	"github.com/aliworkshop/ai-engineering-course/internal/durable"
 	"github.com/aliworkshop/ai-engineering-course/internal/events"
 	"github.com/aliworkshop/ai-engineering-course/internal/llm"
+	"github.com/aliworkshop/ai-engineering-course/internal/runtime"
 	"github.com/aliworkshop/ai-engineering-course/internal/tools"
 	"github.com/aliworkshop/ai-engineering-course/internal/ui"
 )
@@ -48,11 +44,22 @@ import (
 // Model is the OpenRouter model the agent talks to. It has to support tools.
 const Model = "openai/gpt-4o-mini"
 
-// The harness keeps its state in one directory, so everything the runtime owns
-// is inspectable with ls and deletable with rm -rf. All of it is plain files by
-// design: a workflow is a JSON file, the event log is JSONL. Swapping in
-// Postgres later changes the storage, not a single idea above it.
+// SampleTask is the canned workload: three items that between them exercise
+// every branch — one the knowledge base answers, one it answers with a known
+// bug, and one it has a price for.
+const SampleTask = `Handle these work items:
+- item-1 (customer_message): "I was charged twice and need help."
+- item-2 (bug_report): "The export button fails on Safari."
+- item-3 (sales_request): "Can you send pricing for 50 seats?"`
+
+// harnessDir holds what the process owns rather than the engine: the event
+// log. Workflow state lives in Postgres now, which is why this directory has
+// one file in it instead of a tree.
 const harnessDir = ".harness"
+
+// recoveryWindow is how long -recover stays alive while DBOS replays in the
+// background. Long enough for a stalled run to finish its model calls.
+const recoveryWindow = 60 * time.Second
 
 func harnessPath(parts ...string) string {
 	return filepath.Join(append([]string{harnessDir}, parts...)...)
@@ -61,25 +68,19 @@ func harnessPath(parts ...string) string {
 func main() {
 	sample := flag.Bool("sample", false, "work the three sample items, then exit")
 	task := flag.String("task", "", "work one task, then exit")
-	list := flag.Bool("list", false, "list workflows and their status")
-	resume := flag.String("resume", "", "replay a workflow that stopped early")
+	recover := flag.Bool("recover", false, "launch and do nothing else, while DBOS replays what crashed")
+	inspect := flag.Bool("inspect", false, "print the engine's own workflow receipts; add an id for its steps")
 	audit := flag.Bool("audit", false, "read the event log back and report whether any work happened twice")
 	crashAt := flag.Int("crash-at", -1, "DEMO: exit before this step, simulating a crash mid-task")
-	useDBOS := flag.Bool("dbos", false, "run on DBOS Transact instead of internal/durable; with no task, launch and recover")
-	inspect := flag.Bool("dbos-inspect", false, "print DBOS's own workflow receipts out of Postgres; add an id for its steps")
 	flag.Parse()
 
 	_ = godotenv.Load()
 
-	// Two commands read the runtime's own files and never talk to a model, so
-	// they work without a key — which matters, because the moment you want to
+	// The audit reads the runtime's own log and never talks to a model, so it
+	// works without a key — which matters, because the moment you want to
 	// audit a log is usually not the moment you want to spend money.
 	if *audit {
 		exitOn(auditLog())
-		return
-	}
-	if *list {
-		exitOn(listWorkflows())
 		return
 	}
 
@@ -96,117 +97,44 @@ func main() {
 		events.NewJSONL(harnessPath("events.jsonl")),
 	}
 
-	// The same agent, the same tools, the same events — someone else's engine
-	// underneath. See internal/dbosrun for the mapping between the two.
-	if *inspect || *useDBOS {
-		opt := dbosrun.Options{
-			Client: llm.NewOpenRouter(apiKey), Model: Model,
-			Registry: tools.Default(), Bus: bus, CrashAt: *crashAt,
-		}
-		if *inspect {
-			exitOn(dbosrun.Inspect(context.Background(), opt, flag.Arg(0)))
-			return
-		}
+	// Connecting is also what starts recovery: anything a previous process
+	// left half-done begins replaying here, before we have asked for anything.
+	engine, err := runtime.New(context.Background(), runtime.Options{
+		Client: llm.NewOpenRouter(apiKey), Model: Model,
+		Registry: tools.Default(), Bus: bus, CrashAt: *crashAt,
+	})
+	exitOn(err)
+	defer engine.Close()
+
+	if !engine.Durable() {
+		fmt.Printf("(%s is not set — running without checkpoints; a crash loses the run)\n",
+			runtime.DatabaseEnv)
+	}
+
+	switch {
+	case *inspect:
+		exitOn(engine.Inspect(flag.Arg(0)))
+	case *recover:
+		engine.Wait(recoveryWindow)
+	case *sample || *task != "":
 		if *sample {
-			*task = agent.SampleTask
+			*task = SampleTask
 		}
-		if *task == "" {
-			// No task and no id: launch, and let DBOS find what it left
-			// PENDING in Postgres. This is the whole demo.
-			exitOn(dbosrun.Recover(context.Background(), opt, 30*time.Second))
-			return
-		}
-		answer, err := dbosrun.Run(context.Background(), opt, *task)
+		answer, err := engine.Ask(context.Background(), *task)
 		exitOn(err)
 		fmt.Println("\nagent>", answer)
-		return
+	default:
+		ui.New(os.Stdin, os.Stdout).Run(context.Background(), engine)
 	}
-
-	store, err := durable.NewStore(harnessPath("wf"), bus)
-	exitOn(err)
-
-	assistant := agent.New(llm.NewOpenRouter(apiKey), Model, tools.Default()).
-		WithEvents(bus).
-		WithStore(store).
-		WithCrashAt(*crashAt)
-
-	if *resume != "" {
-		exitOn(once(assistant.Resume, *resume))
-		return
-	}
-
-	// Recover FIRST, then take new work. This is exactly what a durable engine
-	// does on launch: find every workflow that was mid-flight when the process
-	// last died and replay it forward. Nothing asks you to do it, and nothing
-	// re-runs — which is the whole claim, made without being announced.
-	exitOn(recoverPending(assistant, store))
-
-	if *sample {
-		*task = agent.SampleTask
-	}
-	if *task != "" {
-		exitOn(once(assistant.Ask, *task))
-		return
-	}
-
-	ui.New(os.Stdin, os.Stdout).Run(context.Background(), assistant)
 }
 
-// recoverPending replays every workflow that crashed.
-func recoverPending(assistant *agent.Agent, store *durable.Store) error {
-	pending, err := store.Pending()
-	if err != nil {
-		return err
-	}
-	for _, row := range pending {
-		fmt.Printf("recovering %s from its last completed step…\n", row.ID)
-		if _, err := assistant.Resume(context.Background(), row.ID); err != nil {
-			// One unrecoverable workflow should not stop the others, or the
-			// process. Report it and carry on.
-			fmt.Printf("  %s could not be recovered: %v\n", row.ID, err)
-		}
-	}
-	return nil
-}
-
-// once works a single task and prints the answer — the shape anything outside
-// Go needs to drive this: a shell script, a CI step, a demo you want to watch
-// the event stream scroll past.
-func once(work func(context.Context, string) (string, error), arg string) error {
-	answer, err := work(context.Background(), arg)
-	if err != nil {
-		return err
-	}
-	fmt.Println("\nagent>", answer)
-	return nil
-}
-
-// listWorkflows shows what the runtime is holding. A workflow still marked
-// running is one that crashed: nobody is running it.
-func listWorkflows() error {
-	store, err := durable.NewStore(harnessPath("wf"), nil)
-	if err != nil {
-		return err
-	}
-	rows, err := store.List()
-	if err != nil {
-		return err
-	}
-	if len(rows) == 0 {
-		fmt.Println("No workflows yet.")
-		return nil
-	}
-
-	fmt.Printf("%-10s %-9s %-6s %s\n", "ID", "STATUS", "STEPS", "TASK")
-	for _, row := range rows {
-		fmt.Printf("%-10s %-9s %-6d %s\n", row.ID, row.Status, row.Steps, truncate(row.Input, 50))
-	}
-	fmt.Printf("\nEvent log: %s\n", harnessPath("events.jsonl"))
-	return nil
-}
-
-// auditLog answers the question the whole part is built around: did a crash
+// auditLog answers the question durable execution is built around: did a crash
 // ever cause a side effect to happen twice?
+//
+// The engine has its own receipts — see -inspect — but this reads OUR log, and
+// the difference is worth keeping. The event stream is the one thing that
+// still exists when the database does not, and it is the same stream whether
+// the run was durable or not.
 func auditLog() error {
 	report, err := events.Audit(harnessPath("events.jsonl"))
 	if os.IsNotExist(err) {
@@ -223,7 +151,6 @@ func auditLog() error {
 	}
 
 	fmt.Printf("\n  tool calls executed    %d\n", report.Calls)
-	fmt.Printf("  steps replayed         %d  (work a resumed run did not redo)\n", report.Replayed)
 	if len(report.Duplicated) == 0 {
 		fmt.Println("  repeated side effects  0  ✔ nothing ran twice")
 		return nil
@@ -234,16 +161,6 @@ func auditLog() error {
 		fmt.Printf("    %d×  %s  (%s) in %s\n", d.Count, d.Name, d.Call, d.Workflow)
 	}
 	return nil
-}
-
-// truncate keeps a listed task to one line. The newlines matter: a task is
-// often several work items, and a table that wraps is not a table.
-func truncate(s string, max int) string {
-	flat := []rune(strings.NewReplacer("\n", " ", "\r", " ").Replace(s))
-	if len(flat) <= max {
-		return string(flat)
-	}
-	return string(flat[:max]) + "…"
 }
 
 func exitOn(err error) {
