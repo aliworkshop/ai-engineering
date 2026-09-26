@@ -8,23 +8,35 @@
 > **Steps 1–4** built the loop: a model, one tool, a system prompt, clean
 > layers. **Step 5** was [part 1 — the brittle
 > agent](https://github.com/pjsofts/ai-engineering-1/tree/main/week3-workshop/part1-brittle):
-> every move an event, and two failures staged on purpose. **Step 6** is here —
-> [part 2 — durable
-> execution](https://github.com/pjsofts/ai-engineering-1/tree/main/week3-workshop/part2-durable),
-> which fixes the first of them.
+> every move an event, and two failures staged on purpose. **Step 6** fixed the
+> first with [durable
+> execution](https://github.com/pjsofts/ai-engineering-1/tree/main/week3-workshop/part2-durable)
+> — first hand-rolled over JSON files, now on
+> [DBOS Transact](https://docs.dbos.dev/), which is what runs here.
+>
+> The forty-line version is still in the history, and building it first is the
+> only reason the rest of this reads as obvious. `git log` for
+> `internal/durable`.
 
 This is a **support triage agent**. Give it work items and it classifies each
 one, reads the knowledge base, drafts a reply, and sends it. Three of those
 tools are harmless. The fourth emails the customer.
 
 ```sh
-# needs OPENROUTER_API_KEY in .env
+# needs OPENROUTER_API_KEY, and a Postgres for durability
+export DBOS_SYSTEM_DATABASE_URL="postgresql://postgres:secret@localhost:5432/agent_dbos?sslmode=disable"
+
 go run . -sample          # the three sample items, one shot
 go run .                  # recover anything that crashed, then talk to it
-go run . -list            # what the runtime is holding
+go run . -recover         # launch and do nothing else; watch it finish itself
+go run . -inspect [id]    # the engine's own receipts, out of Postgres
 go run . -audit           # did any work happen twice?
 go run . -crash-at 2      # die mid-task, after real side effects
 ```
+
+Leave `DBOS_SYSTEM_DATABASE_URL` unset and the same loop still runs — in
+memory, checkpointing nothing, and saying so on the first line. The agent
+works on a laptop with no database; it just cannot survive a crash there.
 
 ```
   ▶  workflow.started      6db483e3  {"input":"Handle these work items:…"}
@@ -48,55 +60,59 @@ So the remaining hole is narrower and sharper: the agent can no longer email
 a customer *twice by accident*. It can still email them *once without asking*.
 That is what part 7's approval gate is for.
 
-## Durable execution (`internal/durable`)
+## Durable execution (`internal/runtime`)
 
-The whole mechanism is one method:
-
-```go
-func Step[T any](w *Workflow, name string, fn func() (T, error)) (T, error) {
-    if raw, cached := w.steps[name]; cached {
-        return decode[T](raw), nil       // no model call, no side effect, no cost
-    }
-    out, err := fn()                     // non-determinism lives HERE
-    if err != nil {
-        return zero, err                 // a FAILED step is never checkpointed
-    }
-    w.steps[name] = encode(out)
-    w.save()                             // checkpoint BEFORE moving on
-    return out, nil
-}
-```
-
-A workflow is a JSON file in `.harness/wf/<id>.json`. A step is a named unit
-of work whose result is written down the instant it finishes. To recover you
-**re-run the workflow body** — completed steps return their cached result
-without executing, and execution races forward to exactly where it died.
+A workflow is a task. A **step** is a named unit of work inside it whose result
+is checkpointed the instant it finishes. To recover, the body is simply re-run:
+completed steps return their stored result without executing — no model call,
+no side effect, no cost — and execution races forward to exactly where it died.
 
 There is no separate recovery path. **Resuming is running.**
 
 That only works if the body is *deterministic*, which is the golden rule of
 durable workflows: everything non-deterministic — the model call, the tool
 call, the clock — happens inside a step, and everything outside one is rebuilt
-identically on replay. It is also why the agent no longer keeps a conversation
-in a field. A run's messages are local, rebuilt from the workflow's own input
-and its steps, so a fresh process replays them exactly. The cost is that the
-REPL stops remembering across turns; each line is a task now.
+identically on replay. DBOS enforces it harder than a hand-rolled engine does:
+steps are matched by **position**, not by name, so the body must issue the same
+steps in the same order every time.
 
-Three details that are the difference between this working and looking like it
-works:
+### One loop, two steppers
 
-- **A failed step is never checkpointed.** Pinning a failure would make the
-  crash permanent, and retrying the workflow has to mean retrying what broke.
-- **Saves are temp-file-and-rename.** The failure this package exists to
-  prevent is a crash at the worst possible moment; a torn state file turns one
-  lost step into an unrecoverable workflow.
-- **A corrupt file fails loudly** rather than quietly starting over — since
-  starting over is precisely the bug.
+The loop does not branch on durability. It asks a `stepper` to run each named
+unit of work, and there are two of them:
+
+```go
+type stepper interface {
+    id() string
+    msg(name string, fn func(context.Context) (agent.Msg, error)) (agent.Msg, error)
+    text(name string, fn func(context.Context) (string, error)) (string, error)
+}
+```
+
+`dbosSteps` checkpoints into Postgres. `plainSteps` runs the work and hands it
+back. Same body, same steps, same order — what changes is only whether
+finishing a step writes anything down, and therefore whether a crash costs a
+replay or a repeat.
+
+Two methods rather than one generic one because Go has no type parameters on
+interface methods, and the loop only ever checkpoints two things: a model turn
+and a tool result.
+
+### Why the loop lives here and not in `agent`
+
+DBOS can only recover a workflow that is a **plain package-level function it
+can find by name**. Recovery happens inside `Launch`, with no caller in sight,
+so the body cannot be a method and cannot close over a client passed in at call
+time — which is why its dependencies are a package-level var. It reads like a
+global because it is one; the alternative is a workflow the engine cannot
+resurrect.
+
+So `internal/agent` keeps what the agent *is* — `Msg`, `ToolBox`, the prompt,
+and `Think` — and `internal/runtime` owns how it runs.
 
 ## Watch it crash
 
 ```sh
-rm -rf .harness
 go run . -sample -crash-at 2
 ```
 
@@ -106,115 +122,58 @@ go run . -sample -crash-at 2
   💥 simulated crash before step 2 — the process is gone.
 ```
 
-Eight steps had completed. Real tool calls ran. The process is dead.
+Eight steps had completed. Real tool calls ran. The process is dead, and the
+workflow is sitting in Postgres marked `PENDING`.
+
+Now start the agent again with **no task and no workflow id**:
 
 ```sh
-go run . -list
-#  ID         STATUS    STEPS  TASK
-#  bb657985   running   8      Handle these work items: - item-1 (customer_mes…
+go run . -recover        # or just `go run .`, which recovers and then talks
 ```
 
-`running` with nobody running it — that is what crashed looks like. Now just
-start the agent again. **You are not asked to do anything:**
-
 ```
-recovering bb657985 from its last completed step…
-  ⟲  workflow.resumed      bb657985  {"input":"Handle these work items:…"}
-  ⏩  step.cached           bb657985  {"name":"model-00"}
-  ⏩  step.cached           bb657985  {"name":"tool-call_Wh2R6I7…"}
-  ⏩  step.cached           bb657985  {"name":"model-01"}
-  ⏩  step.cached           bb657985  {"name":"tool-call_ViS34Cf…"}
-  ▪  step.completed        bb657985  {"name":"model-02","ms":3461}
-  ⚙  tool.requested        bb657985  {"name":"draftReply",…}
-  ✔  workflow.completed    bb657985  {"output":"Here's what I did…"}
+launched — DBOS is recovering anything left PENDING (waiting 1m0s)
+  ⚙  tool.requested        6625d36d…  {"name":"draftReply",…}
+  ✓  tool.completed        6625d36d…  {"name":"draftReply",…}
+  ⚙  tool.requested        6625d36d…  {"name":"sendReply",…}
+  ✔  workflow.completed    6625d36d…  {"output":"I processed the work items…"}
 ```
 
-Every `⏩` is work that did not happen again: a model turn not re-billed, a
-tool call not re-run. Then live steps carry it to the end.
+Nothing was asked of you. Connecting *is* recovering: `Launch` finds every
+`PENDING` workflow, resumes it from the exact step where the process died, and
+the drafts and the sends go out. The eight pre-crash steps are not in that
+output because they did not happen again — see `-inspect` below.
 
-## Proving it: `-audit`
+## Proving it: `-audit` and `-inspect`
 
-Watching it recover is not the same as knowing nothing ran twice. The event
-log already holds the answer, so the check is a read rather than an
-instrument:
+Watching it recover is not the same as knowing nothing ran twice. There are two
+records, and they answer different questions.
+
+**`-audit` reads our own event log.** The measurement is `tool.requested`
+grouped by the model's own **call id**, and it works because of where that
+event is emitted: *inside* the step. A replay does not re-run the step, so it
+does not re-emit it — one line per call id means the tool ran once, ever.
 
 ```
-.harness/events.jsonl — 68 events across 1 workflows
+.harness/events.jsonl — 112 events across 4 workflows
 
-  step.cached            25
-  step.completed         16
-  tool.requested         12
-  workflow.resumed       2
-  workflow.started       1
-
-  tool calls executed    12
-  steps replayed         25  (work a resumed run did not redo)
+  tool calls executed    26
   repeated side effects  0  ✔ nothing ran twice
 ```
-
-That run survived two crashes and still sent each reply once.
-
-The measurement is `tool.requested` grouped by the model's own **call id**, and
-it works because of where that event is emitted: *inside* the tool's
-checkpointed step. A replay does not re-run the step, so it does not re-emit
-it — one line per call id means the tool ran once, ever. Emit it outside the
-step and every successful recovery would look like a duplicate.
 
 A tool **name** repeating is normal: three items, three `sendReply` calls. A
 **call** repeating is a customer who got two emails.
 
-## The same agent on somebody else's engine (`internal/dbosrun`)
-
-`internal/durable` is about a hundred and fifty lines. Having built it, it is
-worth seeing the industrial version — not because [DBOS
-Transact](https://docs.dbos.dev/) is better, but because the thing you just
-built *is* the real idea, and here it is with the volume turned up.
-
-```sh
-# a local Postgres; the library is MIT and runs entirely on your machine
-export DBOS_SYSTEM_DATABASE_URL="postgresql://postgres:secret@localhost:5432/agent_dbos?sslmode=disable"
-
-go run . -dbos -sample        # the same task, checkpointed into Postgres
-go run . -dbos                # no task, no id — launch, and it finishes itself
-go run . -dbos-inspect [id]   # the engine's own receipts
-```
-
-The mapping is nearly line for line:
-
-| `internal/durable` | DBOS Transact |
-|---|---|
-| `durable.Store` + `.harness/wf/*.json` | `dbos.NewContext` + Postgres tables |
-| `durable.Step(wf, name, fn)` | `dbos.RunAsStep(ctx, fn, WithStepName(name))` |
-| `store.Pending` + `recoverPending` | automatic recovery inside `dbos.Launch` |
-| `events.jsonl` + `-audit` | `ListWorkflows` / `GetWorkflowSteps` |
-| — | queues, timeouts, fork-from-step, cancel, durable sleep |
-
-The golden rule is identical: the body must be deterministic, and everything
-non-deterministic lives inside a step. **DBOS enforces it harder** — our steps
-are keyed by *name*, DBOS matches them by *position*, so the body must issue
-the same steps in the same order on replay.
-
-### The moment worth pausing on
-
-Crash it, then launch it with **no task and no workflow id**:
-
-```sh
-go run . -dbos -sample -crash-at 2
-#   💥 simulated crash before step 2 — the process is gone.
-
-go run . -dbos                 # ← no arguments at all
-```
-
-DBOS finds the `PENDING` workflow in Postgres, resumes it from the exact step
-where the process died, and the drafts and the sends go out. Then ask the
-engine for its receipts:
+**`-inspect` asks the engine.** DBOS already recorded every step's name, output
+and duration, because it needed them in order to replay:
 
 ```
   #    STEP                                     MS       OUTPUT
-  6    tool-call_288NASSg7jambza5xJ0b8xuN       5        "{\"articles\":[\"The Safari export failure…
-  7    tool-call_YWcms49wWWovtsJXGJE68n4i       4        "{\"articles\":[\"Team plans are $20/seat…
+  0    started                                  3        ""
+  7    tool-call_BgTXl6gqqfa3VACeM4QTbX8J       2        "{\"articles\":[\"The Safari export failure…
+  8    tool-call_oDTE7UKYScx5c3J1p17EFl1e       2        "{\"articles\":[\"Team plans are $20/seat…
   ---- 7s gap: the process was dead here; everything above was replayed from Postgres ----
-  8    model-02                                 2649     {"role":"assistant","tool_calls":[…
+  9    model-02                                 3309     {"role":"assistant","tool_calls":[…
 ```
 
 That gap line is the whole lesson in one row. In a live run consecutive steps
@@ -222,29 +181,11 @@ are *milliseconds* apart — everything slow is itself a step, so it sits inside
 the window rather than between two. A gap you can see is a gap where the
 program was not running.
 
-### Three things that are not obvious
-
-- **The workflow body is a plain registered function, and its dependencies are
-  a package-level var.** Recovery happens inside `Launch` with no caller in
-  sight, so the body cannot close over a client passed in at call time. It
-  reads like a global because it is one; the alternative is a workflow DBOS
-  cannot resurrect.
-- **The application version is pinned.** By default it is a hash of your code,
-  and DBOS only recovers workflows whose version matches — so an edit between
-  the crash and the recovery silently orphans the parked workflow. In
-  production that default is a feature: a bad deploy must not half-replay
-  workflows written by different code.
-- **The engine's logger is silenced at shutdown, and only then.** Cancelling
-  the context makes the queue runner report its in-flight work as failed —
-  true, dull, and indistinguishable from a crash to anyone watching.
-
-### What it costs
-
-The agent's own harness needs two dependencies and a directory. This needs a
-database, a driver, and a library that brings about forty modules with it —
-`go.mod` goes from two direct dependencies to three, and `go list -m all` from
-a handful to seventy-odd. That trade is exactly why the hand-rolled version is
-worth understanding first, and why `-dbos` is a flag rather than the default.
+One honest cost of handing durability to a real engine: **the replay is
+invisible in our own stream.** The hand-rolled store emitted `⏩ step.cached`
+for every step it served from disk, and you could watch recovery scroll past.
+DBOS returns the cached value without telling us, so `-inspect` is now where
+you go to see what was replayed.
 
 ## Everything is an event (`internal/events`)
 
@@ -306,27 +247,28 @@ it is unsure. The interesting failure in this scenario is never the ranking.
 
 ## Architecture
 
-Dependencies point inward. The terminal knows the agent; the agent knows an
-abstract tool box; the tools know nothing about either. Nothing inner imports
-anything outer, so each layer can be tested — or replaced — on its own.
+Dependencies point inward. The terminal knows an assistant; the runtime knows
+the agent; the agent knows an abstract tool box; the tools know nothing about
+any of it. Nothing inner imports anything outer, so each layer can be tested —
+or replaced — on its own.
 
 ```
-main.go                    wire the pieces together, then run
+main.go                     wire the pieces together, then run
   └── internal/
-        ui/       Console  the REPL. Owns stdin
-        agent/    Agent    the loop and the system prompt
-        tools/    Registry the Tool interface, and every tool
-        durable/  Workflow checkpoint · crash · resume          ┐ the
-        events/   Event    the typed stream, console and log    ┘ harness
-        dbosrun/           the same agent, on DBOS Transact (opt-in)
-        llm/               the one place the OpenRouter client is built
+        ui/        Console  the REPL. Owns stdin, knows only an Assistant
+        runtime/   Runtime  HOW a task runs: the loop, steps, recovery
+        agent/              WHAT the agent is: Msg · ToolBox · prompt · Think
+        tools/     Registry the Tool interface, and every tool
+        events/    Event    the typed stream, console and log
+        llm/                the one place the OpenRouter client is built
 ```
 
-`durable` and `events` sit *under* the agent — they know nothing about agents,
-tools or terminals, which is what lets each be used and tested on its own.
-Everything the runtime owns lives in `.harness/` as plain files: a workflow is
-a JSON file, the log is JSONL. Swapping in Postgres later changes the storage,
-not a single idea above it.
+The split between `runtime` and `agent` is the one worth understanding, and it
+was forced by the engine rather than chosen for tidiness — see **Why the loop
+lives here** above.
+
+`events` sits under everything and imports nothing of ours, so any layer may
+emit. Workflow state lives in Postgres; `.harness/` holds only the event log.
 
 `main.go` is now four lines of wiring, outermost last:
 
@@ -362,19 +304,19 @@ workflow. Both are optional: a nil emitter is a silent agent, and **a nil
 store is the part 1 agent**, still there and still runnable, because the
 durability claim means nothing until you can run the other one.
 
-## The loop (`internal/agent`)
+## The loop (`internal/runtime`)
 
 ```go
-working := []Msg{{system, SystemPrompt}, {user, wf.Input()}}
+working := []agent.Msg{{system, agent.SystemPrompt}, {user, task}}
 
-for step := 0; step < maxSteps; step++ {
-    reply := durable.Step(wf, "model-NN", think)   // checkpointed
+for i := 0; i < maxSteps; i++ {
+    reply := s.msg(fmt.Sprintf("model-%02d", i), think)   // checkpointed
     working = append(working, reply)
     if len(reply.ToolCalls) == 0 {
-        return reply.Text                          // it answered: done
+        return reply.Text                                 // it answered: done
     }
     for _, call := range reply.ToolCalls {
-        durable.Step(wf, "tool-"+call.ID, run)     // checkpointed
+        s.text("tool-"+call.ID, run)                      // checkpointed
     }
 }
 ```
@@ -385,10 +327,33 @@ Three things the loop owns rather than the model:
   loops until your credit does.
 - **Dispatch always returns a string.** A failure becomes `error: …` in the
   transcript, so the model can try something else. An error that propagated
-  would end the conversation.
-- **A failed run keeps its completed steps.** The workflow file stays on disk
-  marked `failed`, which is what makes the next attempt cheap — it replays
-  what already worked and retries only what broke.
+  would end the conversation — and, here, would be a step that refuses to
+  checkpoint.
+- **A failed run keeps its completed steps.** The workflow stays in Postgres
+  with everything that finished, which is what makes the next attempt cheap:
+  it replays what already worked and retries only what broke.
+
+### Two things that will bite you
+
+- **The application version is pinned** (`AppVersion = "session-7"`). By
+  default it is a hash of your code, and DBOS only recovers workflows whose
+  version matches — so an edit between a crash and the recovery silently
+  orphans the parked workflow and `-recover` does nothing at all. In production
+  that default is a feature: a bad deploy must not half-replay workflows
+  written by different code.
+- **The engine's logger is silenced at shutdown, and only then.** Cancelling
+  the context makes DBOS's queue runner report its in-flight work as failed —
+  `context canceled`, at WARN and ERROR — which is true, dull, and
+  indistinguishable from a crash to anyone reading the terminal. Anything
+  logged while it is actually running still reaches you.
+
+### What it costs
+
+`go.mod` has three direct dependencies where the pitch was two, and `go list -m
+all` reports seventy-odd modules where it used to report a handful. A local
+Postgres is now part of running the thing durably at all. The hand-rolled
+engine was a directory and a hundred and fifty lines — building that first is
+the only reason any of the above reads as obvious rather than as magic.
 
 ## The system prompt
 
@@ -427,7 +392,7 @@ purpose, and each one is a session's worth of work:
 
 | It cannot… | What fixes it |
 |---|---|
-| be trusted with `sendReply` | **human-in-the-loop** — a gate the dangerous tool has to pass, and that can wait for days without holding a process open |
+| be trusted with `sendReply` | **human-in-the-loop** — a gate the dangerous tool has to pass, and that can wait for days without holding a process open. DBOS has the pieces already: `send`/`recv` and a durable `sleep` |
 | run model-written code safely | **a sandbox** — one mediated door, with the environment stripped and a timer |
 | hold a conversation across tasks | **memory** — history, state and context kept apart, and compacted against a token budget |
 | stay affordable in a long task | **context management** — the messages are sent whole and grow all run |

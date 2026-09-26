@@ -19,3 +19,15 @@ For each work item the user gives you:
 2. Search the knowledge base with searchKnowledgeBase if it helps.
 3. Draft a reply with draftReply, then send it with sendReply.
 Work through every item, then briefly summarize what you did.`
+
+// SampleTask is the canned workload: three items that between them exercise
+// every branch — one the knowledge base answers, one it answers with a known
+// bug, and one it has a price for. Run it with `go run . -sample`.
+//
+// It lives next to the prompt because it is only meaningful next to it: these
+// are support work items, and they exercise this agent's pipeline and no
+// other.
+const SampleTask = `Handle these work items:
+- item-1 (customer_message): "I was charged twice and need help."
+- item-2 (bug_report): "The export button fails on Safari."
+- item-3 (sales_request): "Can you send pricing for 50 seats?"`

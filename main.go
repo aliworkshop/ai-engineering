@@ -34,6 +34,7 @@ import (
 
 	"github.com/joho/godotenv"
 
+	"github.com/aliworkshop/ai-engineering-course/internal/agent"
 	"github.com/aliworkshop/ai-engineering-course/internal/events"
 	"github.com/aliworkshop/ai-engineering-course/internal/llm"
 	"github.com/aliworkshop/ai-engineering-course/internal/runtime"
@@ -43,14 +44,6 @@ import (
 
 // Model is the OpenRouter model the agent talks to. It has to support tools.
 const Model = "openai/gpt-4o-mini"
-
-// SampleTask is the canned workload: three items that between them exercise
-// every branch — one the knowledge base answers, one it answers with a known
-// bug, and one it has a price for.
-const SampleTask = `Handle these work items:
-- item-1 (customer_message): "I was charged twice and need help."
-- item-2 (bug_report): "The export button fails on Safari."
-- item-3 (sales_request): "Can you send pricing for 50 seats?"`
 
 // harnessDir holds what the process owns rather than the engine: the event
 // log. Workflow state lives in Postgres now, which is why this directory has
@@ -118,7 +111,7 @@ func main() {
 		engine.Wait(recoveryWindow)
 	case *sample || *task != "":
 		if *sample {
-			*task = SampleTask
+			*task = agent.SampleTask
 		}
 		answer, err := engine.Ask(context.Background(), *task)
 		exitOn(err)
