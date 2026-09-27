@@ -49,6 +49,7 @@ type ToolBox interface {
 // other version.
 type Store interface {
 	Open(id, input string) (*durable.Workflow, error)
+	Read(id string) (durable.Row, []durable.StepInfo, error)
 }
 
 // Agent holds the loop and everything it was wired with.
@@ -102,7 +103,7 @@ func (a *Agent) WithCrashAt(step int) *Agent {
 // Ask works one task and returns the answer. One Ask is one WORKFLOW: it gets
 // an id, and with a store behind it, it gets a file.
 func (a *Agent) Ask(ctx context.Context, input string) (string, error) {
-	return a.run(ctx, newWorkflowID(), input)
+	return a.run(ctx, newWorkflowID(), input, nil)
 }
 
 // Resume re-runs a workflow that stopped early. There is no separate recovery
@@ -113,7 +114,7 @@ func (a *Agent) Resume(ctx context.Context, workflowID string) (string, error) {
 	if a.store == nil {
 		return "", fmt.Errorf("agent: cannot resume without a durable store")
 	}
-	return a.run(ctx, workflowID, "")
+	return a.run(ctx, workflowID, "", nil)
 }
 
 // newWorkflowID names one run. Eight hex characters is enough to tell today's
@@ -127,11 +128,11 @@ func newWorkflowID() string {
 }
 
 // run opens the workflow, drives the loop, and records how it ended.
-func (a *Agent) run(ctx context.Context, id, input string) (string, error) {
+func (a *Agent) run(ctx context.Context, id, input string, seed []Msg) (string, error) {
 	// No store: the Part 1 loop, unchanged and honest about it.
 	if a.store == nil {
 		events.Emit(a.bus, events.Event{Type: events.WorkflowStarted, Workflow: id, Input: input})
-		answer, err := a.loop(ctx, nil, id, input)
+		answer, err := a.loop(ctx, nil, id, input, seed)
 		a.finished(id, answer, err)
 		return answer, err
 	}
@@ -147,7 +148,7 @@ func (a *Agent) run(ctx context.Context, id, input string) (string, error) {
 	}
 	events.Emit(a.bus, events.Event{Type: started, Workflow: wf.ID(), Input: wf.Input()})
 
-	answer, err := a.loop(ctx, wf, wf.ID(), wf.Input())
+	answer, err := a.loop(ctx, wf, wf.ID(), wf.Input(), seed)
 	if err != nil {
 		// Failed, not finished: the file stays on disk with every completed
 		// step in it, which is what makes the next attempt cheap.
@@ -178,11 +179,24 @@ func (a *Agent) finished(id, answer string, err error) {
 // this slice, this counter, this if — is rebuilt identically on a replay,
 // which is the golden rule of durable workflows and the only reason recovery
 // can be this simple.
-func (a *Agent) loop(ctx context.Context, wf *durable.Workflow, id, input string) (string, error) {
-	working := []Msg{
-		{Role: "system", Text: SystemPrompt},
-		{Role: "user", Text: input},
+func (a *Agent) loop(ctx context.Context, wf *durable.Workflow, id, input string, seed []Msg) (string, error) {
+	// The conversation so far is a STEP, which is the only honest place for it.
+	//
+	// A field on the Agent would survive across REPL turns and quietly break
+	// replay: a recovered run has no such field, so it would rebuild a
+	// different conversation and carry on from somewhere the checkpoints never
+	// were. Written down as a step, the seed is recovered with everything else
+	// — on a fresh run this stores what it was handed, and on a replay it hands
+	// back what the crashed process was working from.
+	seed, err := step(wf, "seed", func() ([]Msg, error) { return seed, nil })
+	if err != nil {
+		return "", err
 	}
+
+	working := make([]Msg, 0, len(seed)+2)
+	working = append(working, Msg{Role: "system", Text: SystemPrompt})
+	working = append(working, seed...)
+	working = append(working, Msg{Role: "user", Text: input})
 
 	for i := 0; i < maxSteps; i++ {
 		a.maybeCrash(wf, i)
