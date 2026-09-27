@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sync"
 )
 
@@ -80,6 +81,15 @@ func (j *JSONL) Emit(e Event) {
 
 	j.mu.Lock()
 	defer j.mu.Unlock()
+
+	// O_CREATE makes the file, not the directory above it. Creating that here
+	// rather than at construction keeps the promise the open-per-write makes:
+	// a log whose directory is deleted mid-run starts again on the next event.
+	if dir := filepath.Dir(j.path); dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return
+		}
+	}
 
 	f, err := os.OpenFile(j.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
