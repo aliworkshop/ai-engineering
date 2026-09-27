@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/aliworkshop/ai-engineering-course/internal/agent"
 	"github.com/aliworkshop/ai-engineering-course/internal/jev"
 	"github.com/aliworkshop/ai-engineering-course/internal/tools"
 )
@@ -206,18 +205,6 @@ func TestVerifyWithoutAnAnswerIsAnError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), OnTopicKey) {
 		t.Errorf("error = %q, want it to name the missing question", err)
-	}
-}
-
-func TestParseItemsReadsTheSampleTask(t *testing.T) {
-	got := ParseItems(agent.SampleTask)
-	want := []Item{
-		{ID: "item-1", Kind: "customer_message", Text: "I was charged twice and need help."},
-		{ID: "item-2", Kind: "bug_report", Text: "The export button fails on Safari."},
-		{ID: "item-3", Kind: "sales_request", Text: "Can you send pricing for 50 seats?"},
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("ParseItems(SampleTask) =\n%+v\nwant\n%+v", got, want)
 	}
 }
 

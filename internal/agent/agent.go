@@ -19,6 +19,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 
@@ -27,12 +28,17 @@ import (
 
 	"github.com/aliworkshop/ai-engineering-course/internal/durable"
 	"github.com/aliworkshop/ai-engineering-course/internal/events"
+	"github.com/aliworkshop/ai-engineering-course/internal/triage"
 )
 
 // maxSteps caps how many tool rounds one question may take before we give up.
 // Without it, a model that keeps asking for the same tool loops until your
 // credit does.
-const maxSteps = 10
+//
+// Twelve rather than ten because the gate can send a draft back: an item whose
+// reply is blocked costs one extra round to redraft and one to send again, and
+// a ceiling that cut a recovery short would look exactly like the gate failing.
+const maxSteps = 12
 
 // ToolBox is the set of tools the agent can use. tools.Registry satisfies it;
 // depending on the interface rather than the struct keeps this package free of
@@ -64,9 +70,11 @@ type Agent struct {
 	model  string
 	tools  ToolBox
 
-	// store, bus and crashAt are all optional. A nil store is the brittle
-	// loop, a nil bus is a silent one, and crashAt below zero never fires.
+	// store, judge, bus and crashAt are all optional. A nil store is the
+	// brittle loop, a nil judge is the agent from part 2, a nil bus is a
+	// silent one, and crashAt below zero never fires.
 	store   Store
+	judge   *triage.Triager
 	bus     events.Emitter
 	crashAt int
 }
@@ -88,6 +96,29 @@ func (a *Agent) WithEvents(bus events.Emitter) *Agent {
 func (a *Agent) WithStore(store Store) *Agent {
 	a.store = store
 	return a
+}
+
+// WithJudge gives the agent a judgment model, which changes what it is.
+//
+// With one, the work items are classified and their articles chosen before the
+// conversation starts, and no draft reaches the customer without being checked
+// — so the language model is left with the one job only it can do, and the
+// prompt changes to say so. Without one, this is the agent from part 2: it
+// classifies and searches for itself, and nothing stands in front of a send.
+//
+// Both still work, and that is deliberate. A claim about this agent that you
+// cannot check against the other one is not a claim.
+func (a *Agent) WithJudge(judge *triage.Triager) *Agent {
+	a.judge = judge
+	return a
+}
+
+// prompt is the standing instruction that matches what the agent actually is.
+func (a *Agent) prompt() string {
+	if a.judge != nil {
+		return JevSystemPrompt
+	}
+	return SystemPrompt
 }
 
 // WithCrashAt is a DEMO HOOK, not a feature: before the given step the process
@@ -179,10 +210,43 @@ func (a *Agent) finished(id, answer string, err error) {
 // which is the golden rule of durable workflows and the only reason recovery
 // can be this simple.
 func (a *Agent) loop(ctx context.Context, wf *durable.Workflow, id, input string) (string, error) {
-	working := []Msg{
-		{Role: "system", Text: SystemPrompt},
-		{Role: "user", Text: input},
+	// Jobs 1 and 2, before a single word is written: every work item is
+	// classified and its articles chosen, each as its own checkpointed step.
+	//
+	// ParseItems runs OUTSIDE a step, and that is allowed because it is pure —
+	// the same task yields the same items in the same order on a first run and
+	// on a replay a week later, which is what keeps the steps below lined up
+	// with their checkpoints.
+	items := triage.ParseItems(input)
+	triaged := make(map[string]triage.Result, len(items))
+	question := input
+	if a.judge != nil {
+		for _, item := range items {
+			result, err := step(wf, "jev-triage-"+item.ID, func() (triage.Result, error) {
+				return a.judge.Classify(ctx, id, item)
+			})
+			if err != nil {
+				return "", err
+			}
+			triaged[item.ID] = result
+		}
+		// Built from the checkpointed results, so a replay reconstructs the
+		// identical prompt rather than a similar one.
+		question = input + "\n\nJev triage:\n" + triage.Briefing(items, triaged)
 	}
+
+	working := []Msg{
+		{Role: "system", Text: a.prompt()},
+		{Role: "user", Text: question},
+	}
+
+	byID := triage.ByID(items)
+
+	// What the model has drafted so far, rebuilt from its own replayed turns
+	// rather than carried in process state — so a run recovered from a crash
+	// still knows what it wrote before the crash, and the gate still has
+	// something to check.
+	drafts := make(map[string]string, len(items))
 
 	for i := 0; i < maxSteps; i++ {
 		a.maybeCrash(wf, i)
@@ -200,7 +264,16 @@ func (a *Agent) loop(ctx context.Context, wf *durable.Workflow, id, input string
 		}
 
 		for _, call := range reply.ToolCalls {
-			result, err := a.runTool(ctx, wf, id, call)
+			if itemID, message, ok := triage.Drafted(call.Name, call.Args); ok {
+				drafts[itemID] = message
+			}
+
+			verdict, err := a.gate(ctx, wf, id, call, byID, triaged, drafts)
+			if err != nil {
+				return "", err
+			}
+
+			result, err := a.runTool(ctx, wf, id, call, verdict)
 			if err != nil {
 				return "", err
 			}
@@ -208,6 +281,37 @@ func (a *Agent) loop(ctx context.Context, wf *durable.Workflow, id, input string
 		}
 	}
 	return "", fmt.Errorf("hit the step limit after %d tool rounds", maxSteps)
+}
+
+// gate is job 3: the check that stands between a draft and the customer.
+//
+// Its own step, for both of the reasons steps exist. A judgment costs money, so
+// a replay must not buy the same one twice; and the verdict is what runTool
+// acts on, so a crash between deciding and acting must not lose the decision.
+//
+// A call this does not apply to passes, which is the honest description of what
+// it is: a quality check on a draft, not a guard on a tool. Nothing here asks a
+// person, and a send with no draft behind it walks straight through.
+func (a *Agent) gate(ctx context.Context, wf *durable.Workflow, id string, call ToolCall,
+	byID map[string]triage.Item, triaged map[string]triage.Result,
+	drafts map[string]string) (triage.Verdict, error) {
+	pass := triage.Verdict{Pass: true}
+	if a.judge == nil {
+		return pass, nil
+	}
+	itemID, sending := triage.Sending(call.Name, call.Args)
+	if !sending {
+		return pass, nil
+	}
+	draft, drafted := drafts[itemID]
+	item, known := byID[itemID]
+	if !drafted || !known {
+		return pass, nil
+	}
+
+	return step(wf, "jev-verify-"+call.ID, func() (triage.Verdict, error) {
+		return a.judge.Verify(ctx, id, call.ID, item, triaged[itemID], draft)
+	})
 }
 
 // runTool runs one tool as a checkpointed step.
@@ -218,8 +322,20 @@ func (a *Agent) loop(ctx context.Context, wf *durable.Workflow, id, input string
 // that actually ran. Counting them is then a real answer to "did any side
 // effect happen twice?", and that is exactly what -audit counts. Emit them
 // outside the step and every successful recovery would look like a duplicate.
-func (a *Agent) runTool(ctx context.Context, wf *durable.Workflow, id string, call ToolCall) (string, error) {
+func (a *Agent) runTool(ctx context.Context, wf *durable.Workflow, id string, call ToolCall,
+	verdict triage.Verdict) (string, error) {
 	return step(wf, "tool-"+call.ID, func() (string, error) {
+		// A blocked send goes through this step too, and returns without
+		// running anything. It is not simply skipped, because a call with no
+		// tool- step would leave the model asking for something nothing ever
+		// answered, and the next model call rejects that conversation outright.
+		// It emits no tool.requested either, because nothing ran: -audit reads
+		// those as "a side effect happened", and a blocked send is the exact
+		// opposite of one.
+		if !verdict.Pass {
+			return blocked(verdict.Reason), nil
+		}
+
 		events.Emit(a.bus, events.Event{
 			Type: events.ToolRequested, Workflow: id,
 			Name: call.Name, Call: call.ID, Args: call.Args,
@@ -237,6 +353,25 @@ func (a *Agent) runTool(ctx context.Context, wf *durable.Workflow, id string, ca
 		})
 		return result, nil
 	})
+}
+
+// blocked is what the model reads when the gate stops a send.
+//
+// JSON, like every other tool result, and shaped like the one the send would
+// have returned — sent is false instead of true, and there is a reason. The
+// model is told what happened in the same vocabulary it would have been told
+// success, which is what lets it redraft rather than apologise to the user for
+// an error it does not understand.
+func blocked(reason string) string {
+	raw, err := json.Marshal(map[string]any{
+		"sent":       false,
+		"blocked_by": "quality check",
+		"reason":     reason,
+	})
+	if err != nil {
+		return `{"sent":false,"blocked_by":"quality check"}`
+	}
+	return string(raw)
 }
 
 // step runs fn as a checkpointed step when there is a workflow, and just runs

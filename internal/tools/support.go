@@ -191,6 +191,30 @@ func (SendReply) Run(_ context.Context, args string) (string, error) {
 	return marshal(map[string]any{"sent": true, "item_id": a.ItemID, "draft_id": a.DraftID})
 }
 
+// Args is the shape the support tools' arguments share. Not every field is set
+// on every call — draftReply sends a message, sendReply a draft_id — and that
+// is the point of having one struct: the harness around these tools needs to
+// know which item a call is about without caring which tool it was.
+//
+// It lives here because this is where the schemas are declared. A caller that
+// parsed these arguments for itself would be a second place that has to be
+// edited when a schema changes, and the one that gets forgotten.
+type Args struct {
+	ItemID  string `json:"item_id"`
+	Message string `json:"message"`
+	DraftID string `json:"draft_id"`
+	Query   string `json:"query"`
+}
+
+// ParseArgs reads a model's tool arguments. Anything malformed comes back
+// zeroed rather than as an error: the caller is looking for an item id, and
+// "there isn't one" is an answer it can act on.
+func ParseArgs(args string) Args {
+	var a Args
+	_ = decode(args, &a)
+	return a
+}
+
 // marshal renders a tool result. Tool results are JSON because the model reads
 // them: a structured result is one it can quote a field out of, where prose is
 // one it has to interpret.

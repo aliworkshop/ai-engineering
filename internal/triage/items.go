@@ -3,6 +3,8 @@ package triage
 import (
 	"regexp"
 	"strings"
+
+	"github.com/aliworkshop/ai-engineering-course/internal/tools"
 )
 
 // Item is one piece of work. The JSON tags matter: this struct is handed to the
@@ -47,4 +49,35 @@ func ByID(items []Item) map[string]Item {
 		out[item.ID] = item
 	}
 	return out
+}
+
+// Drafted and Sending are how the loop asks about a tool call without naming a
+// tool.
+//
+// The loop must not know that "sendReply" is the dangerous one — that is the
+// seam the whole agent package is built on, and a loop that hard-codes a tool
+// name is a loop one rename away from silently ungating itself. But something
+// has to know, and this package already does: it imports the toolbox to read
+// the knowledge base, so it can answer the question on the loop's behalf.
+
+// Drafted reports the item a draft is being written for, and its text.
+func Drafted(name, args string) (itemID, message string, ok bool) {
+	if name != tools.DraftTool {
+		return "", "", false
+	}
+	a := tools.ParseArgs(args)
+	if a.ItemID == "" || a.Message == "" {
+		return "", "", false
+	}
+	return a.ItemID, a.Message, true
+}
+
+// Sending reports the item an irreversible send is about. A true here is what
+// puts the gate in front of a tool call.
+func Sending(name, args string) (itemID string, ok bool) {
+	if name != tools.SendTool {
+		return "", false
+	}
+	a := tools.ParseArgs(args)
+	return a.ItemID, a.ItemID != ""
 }

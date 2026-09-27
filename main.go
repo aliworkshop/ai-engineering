@@ -32,8 +32,10 @@ import (
 	"github.com/aliworkshop/ai-engineering-course/internal/agent"
 	"github.com/aliworkshop/ai-engineering-course/internal/durable"
 	"github.com/aliworkshop/ai-engineering-course/internal/events"
+	"github.com/aliworkshop/ai-engineering-course/internal/jev"
 	"github.com/aliworkshop/ai-engineering-course/internal/llm"
 	"github.com/aliworkshop/ai-engineering-course/internal/tools"
+	"github.com/aliworkshop/ai-engineering-course/internal/triage"
 	"github.com/aliworkshop/ai-engineering-course/internal/ui"
 )
 
@@ -56,6 +58,7 @@ func main() {
 	list := flag.Bool("list", false, "list workflows and their status")
 	resume := flag.String("resume", "", "replay a workflow that stopped early")
 	audit := flag.Bool("audit", false, "read the event log back and report whether any work happened twice")
+	noJev := flag.Bool("no-jev", false, "run the agent from before Jev: the model classifies and searches for itself, and nothing checks a draft")
 	crashAt := flag.Int("crash-at", -1, "DEMO: exit before this step, simulating a crash mid-task")
 	flag.Parse()
 
@@ -89,9 +92,19 @@ func main() {
 	store, err := durable.NewStore(harnessPath("wf"), bus)
 	exitOn(err)
 
-	assistant := agent.New(llm.NewOpenRouter(apiKey), Model, tools.Default()).
+	// Which agent this is, decided in one place. With Jev the model is left
+	// with the one job only it can do — writing the reply — and gets the
+	// toolbox for that; without it, the model does all four jobs itself.
+	registry, judge := tools.Reply(), triage.New(jev.New(apiKey).WithEvents(bus), bus)
+	if *noJev {
+		registry, judge = tools.Default(), nil
+		fmt.Println("(-no-jev — the model classifies and searches for itself, and nothing checks a draft)")
+	}
+
+	assistant := agent.New(llm.NewOpenRouter(apiKey), Model, registry).
 		WithEvents(bus).
 		WithStore(store).
+		WithJudge(judge).
 		WithCrashAt(*crashAt)
 
 	if *resume != "" {
@@ -186,18 +199,27 @@ func auditLog() error {
 		fmt.Printf("  %-22s %d\n", row.Type, row.Count)
 	}
 
-	fmt.Printf("\n  tool calls executed    %d\n", report.Calls)
-	fmt.Printf("  steps replayed         %d  (work a resumed run did not redo)\n", report.Replayed)
-	if len(report.Duplicated) == 0 {
-		fmt.Println("  repeated side effects  0  ✔ nothing ran twice")
-		return nil
-	}
+	fmt.Printf("\n  %-22s %d\n", "tool calls executed", report.Calls)
+	fmt.Printf("  %-22s %d\n", "judgments bought", report.Judgments)
+	fmt.Printf("  %-22s %d  (work a resumed run did not redo)\n", "steps replayed", report.Replayed)
 
-	fmt.Printf("  repeated side effects  %d  ✘ a tool ran more than once\n\n", len(report.Duplicated))
-	for _, d := range report.Duplicated {
+	// Two claims, because they fail differently. A repeated tool call is a
+	// customer emailed twice; a repeated judgment is a decision already made
+	// and written down, bought again.
+	repeats("repeated side effects", "a tool ran more than once", report.Duplicated)
+	repeats("repeated judgments", "a decision was bought twice", report.Rejudged)
+	return nil
+}
+
+func repeats(label, complaint string, found []events.Duplicate) {
+	if len(found) == 0 {
+		fmt.Printf("  %-22s 0  ✔\n", label)
+		return
+	}
+	fmt.Printf("  %-22s %d  ✘ %s\n\n", label, len(found), complaint)
+	for _, d := range found {
 		fmt.Printf("    %d×  %s  (%s) in %s\n", d.Count, d.Name, d.Call, d.Workflow)
 	}
-	return nil
 }
 
 // truncate keeps a listed task to one line. The newlines matter: a task is
