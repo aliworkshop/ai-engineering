@@ -8,14 +8,21 @@
 > **Steps 1–4** built the loop: a model, one tool, a system prompt, clean
 > layers. **Step 5** was [part 1 — the brittle
 > agent](https://github.com/pjsofts/ai-engineering-1/tree/main/week3-workshop/part1-brittle):
-> every move an event, and two failures staged on purpose. **Step 6** is here —
+> every move an event, and two failures staged on purpose. **Step 6** was
 > [part 2 — durable
 > execution](https://github.com/pjsofts/ai-engineering-1/tree/main/week3-workshop/part2-durable),
-> which fixes the first of them.
+> which fixed the first. **Step 7** is here —
+> [part 3 — the sandbox](https://github.com/pjsofts/ai-engineering-1/tree/main/week3-workshop/part3-sandbox):
+> the agent can write and run code, behind one door.
 
 This is a **support triage agent**. Give it work items and it classifies each
-one, reads the knowledge base, drafts a reply, and sends it. Three of those
-tools are harmless. The fourth emails the customer.
+one, looks up whatever it needs, drafts a reply, and sends it. Four of those
+tools are harmless. The fifth emails the customer.
+
+One of the harmless four is new and different in kind: `runCode` lets the model
+write a JavaScript program and run it. That is the largest capability in the
+program and the only one whose input nobody here wrote, so it is the only one
+with a door in front of it.
 
 ```sh
 # needs OPENROUTER_API_KEY in .env
@@ -24,6 +31,7 @@ go run .                  # recover anything that crashed, then talk to it
 go run . -list            # what the runtime is holding
 go run . -recover         # finish what crashed, then carry on that conversation
 go run . -audit           # did any work happen twice?
+go run . -sandbox         # poke the boundary directly — no model, no key
 go run . -crash-at 2      # die mid-task, after real side effects
 ```
 
@@ -48,6 +56,98 @@ Part 1 staged two failures deliberately. This part answers the first.
 So the remaining hole is narrower and sharper: the agent can no longer email
 a customer *twice by accident*. It can still email them *once without asking*.
 That is what part 7's approval gate is for.
+
+## One door (`internal/sandbox`)
+
+The agent can now write a program and run it. Ask it to find a duplicate charge
+and it stops chatting:
+
+```sh
+go run . -sample
+```
+
+```
+  ⚙  tool.requested  {"name":"runCode","args":"{\"code\":\"const charges = tools.getCharges('cus_88121');
+       const chargeMap = new Map(); for (const charge of charges) { … } return { duplicateId, refund };\"}"}
+  ⚙  tool.requested  {"name":"draftReply","args":"…we found a duplicate charge of $49.00…"}
+  ⚙  tool.requested  {"name":"sendReply",…}
+```
+
+One program fetched, grouped, compared and computed. The old way was three
+tool calls and the arithmetic done in the model's head, which is the kind of
+arithmetic models get quietly wrong.
+
+That is the *reason* for this part. The interesting half is what it costs, and
+what the whole of the answer looks like:
+
+```go
+vm := goja.New()
+vm.Set("tools", api)      // the functions we chose
+vm.Set("console", …)       // captures logs
+time.AfterFunc(timeout, func() { vm.Interrupt("execution timed out") })
+value, err := vm.RunString("(function(){" + code + "})()")
+```
+
+**There is no `require`, no `process`, no `fs`, no `fetch` — and they are not
+blocked.** They were never in the world. That is worth saying twice, because a
+sandbox built by *removing* dangerous things is a list you will forget an entry
+from; one built by naming the few safe things is a world where everything else
+never existed.
+
+```sh
+go run . -sandbox      # four pokes at the boundary, no model and no key needed
+```
+
+```
+1) code mode (fetch, group, dedupe, compute):
+  {"ok":true,"result":{"duplicateId":"ch_002","refund":49},"logs":[]}
+2) infinite loop (killed by the timeout):
+  {"ok":false,"error":"execution timed out after 2s at <eval>:1:2(1)","logs":[]}
+3) require('fs') (blocked):
+  {"ok":false,"error":"ReferenceError: require is not defined at <eval>:1:27(3)","logs":[]}
+4) a bug (structured error):
+  {"ok":false,"error":"ReferenceError: totallyUndefined is not defined","logs":[]}
+```
+
+Every one of those is JSON going back to the model, and that is the point of
+case 4. A program that blew up should read as *something to fix*, not as a wall:
+the model reads the error, rewrites the program, and runs it again. That loop is
+also why `maxSteps` went from 10 to 15.
+
+### The API is read-only, and that is a durability decision
+
+```go
+func SandboxAPI() map[string]any {
+	return map[string]any{
+		"getCharges":          func(customerID string) []Charge { … },
+		"searchKnowledgeBase": func(query string) []string      { … },
+	}
+}
+```
+
+Two functions, both of which only look things up. That is not caution for its
+own sake — it is what makes `runCode` safe to checkpoint like any other step. A
+step gets replayed after a crash, and replaying a lookup costs nothing. Put
+`sendReply` in that map and a replay would email the customer again, so it stays
+outside: an ordinary tool, with an ordinary exactly-once guarantee.
+
+### What it does not do
+
+Honesty is the useful part here. The interpreter runs **inside our own process**,
+so the timeout *interrupts* the code rather than killing a machine out from
+under it, and a program that allocates without pause is a problem this file
+cannot solve. This stops accidents, not a determined attacker. Production runs
+untrusted code in a disposable container or a micro-VM.
+
+What does not change is the shape. Every dangerous capability goes through one
+mediated door — and whether that door opens onto an interpreter or a container
+is a deployment decision, not an architectural one.
+
+Two smaller divergences from the TypeScript this is a port of, both in the name
+of less machinery: the API here is **synchronous**, so the model writes
+`tools.getCharges(id)` with no `await` (the tool description says so, and an
+`await` comes back as a syntax error it can fix); and one new dependency,
+`goja`, which is a JavaScript interpreter in pure Go. `go.mod` now lists three.
 
 ## Durable execution (`internal/durable`)
 
@@ -259,6 +359,7 @@ can still be found.
 |---|---|---|
 | `classifyItem` | files an item under billing / technical / sales / other | no |
 | `searchKnowledgeBase` | returns the house answer for a topic | no |
+| `runCode` | runs a program the model wrote, in the sandbox | no — **because of where it runs** |
 | `draftReply` | writes a reply — sends nothing | no |
 | `sendReply` | **emails the customer. Irreversible, and nothing checks first** | **yes** |
 
@@ -293,6 +394,7 @@ main.go                    wire the pieces together, then run
         ui/       Console  the REPL. Owns stdin, knows only an Assistant
         agent/    Agent    the loop, the prompt, and Session
         tools/    Registry the Tool interface, and every tool
+        sandbox/  Run      the one door model-written code goes through
         durable/  Workflow checkpoint · crash · resume          ┐ the
         events/   Event    the typed stream, console and log    ┘ harness
         llm/               the one place the OpenRouter client is built
@@ -381,10 +483,16 @@ that the job is a four-step pipeline and that every item gets worked.
 const SystemPrompt = `You are a support triage agent.
 For each work item the user gives you:
 1. Classify it with classifyItem.
-2. Search the knowledge base with searchKnowledgeBase if it helps.
+2. If it needs a data lookup or any arithmetic, use runCode (tools.getCharges
+   and tools.searchKnowledgeBase are available inside it).
 3. Draft a reply with draftReply, then send it with sendReply.
 Work through every item, then briefly summarize what you did.`
 ```
+
+Line 2 is the whole of part 3 as far as the model is concerned. Note what it
+does *not* say: nothing about what the code may not do, because that is not the
+prompt's job. The sandbox is a world with four things in it; a sentence asking
+the model to behave would be a sentence to jailbreak.
 
 Three things about it are worth more than the text itself:
 
@@ -409,7 +517,7 @@ purpose, and each one is a session's worth of work:
 | It cannot… | What fixes it |
 |---|---|
 | be trusted with `sendReply` | **human-in-the-loop** — a gate the dangerous tool has to pass, and that can wait for days without holding a process open |
-| run model-written code safely | **a sandbox** — one mediated door, with the environment stripped and a timer |
+| run model-written code *safely* | **a real isolate** — the sandbox is one mediated door with a timer, and it stops accidents. The interpreter shares this process, so a determined attacker or a memory hog is still a problem: production wants a container or a micro-VM behind the same door |
 | remember anything past this process | **memory** — a `Session` keeps a thread alive and `-recover` rebuilds one off disk, but both die with the terminal. Real memory means history, state and context kept apart, and compacted against a token budget |
 | stay affordable in a long task | **context management** — the messages are sent whole and grow all run |
 | be shown to be working | **evals** — no tests, no scores, nothing but your own reading of the replies. The seams above are what make them cheap to write: a stub `ToolBox` is three lines |
