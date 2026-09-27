@@ -30,6 +30,7 @@ import (
 	"github.com/joho/godotenv"
 
 	"github.com/aliworkshop/ai-engineering-course/internal/agent"
+	"github.com/aliworkshop/ai-engineering-course/internal/bench"
 	"github.com/aliworkshop/ai-engineering-course/internal/durable"
 	"github.com/aliworkshop/ai-engineering-course/internal/events"
 	"github.com/aliworkshop/ai-engineering-course/internal/jev"
@@ -58,6 +59,8 @@ func main() {
 	list := flag.Bool("list", false, "list workflows and their status")
 	resume := flag.String("resume", "", "replay a workflow that stopped early")
 	audit := flag.Bool("audit", false, "read the event log back and report whether any work happened twice")
+	benchmark := flag.Bool("bench", false, "measure Jev against the language model on the same questions, then exit")
+	jevOnly := flag.Bool("jev-only", false, "with -bench: skip the language-model baseline, which is the half that costs")
 	noJev := flag.Bool("no-jev", false, "run the agent from before Jev: the model classifies and searches for itself, and nothing checks a draft")
 	crashAt := flag.Int("crash-at", -1, "DEMO: exit before this step, simulating a crash mid-task")
 	flag.Parse()
@@ -80,6 +83,14 @@ func main() {
 	if apiKey == "" {
 		fmt.Println("Set OPENROUTER_API_KEY in your .env first.")
 		os.Exit(1)
+	}
+
+	// The benchmark answers a different question from the agent — how good are
+	// these judgments — so it runs before any of the wiring below and never
+	// opens a store. It needs a key and a network, and nothing else.
+	if *benchmark {
+		exitOn(runBench(apiKey, *jevOnly))
+		return
 	}
 
 	// The event stream goes two places at once: the terminal, live, and a
@@ -127,6 +138,36 @@ func main() {
 	}
 
 	ui.New(os.Stdin, os.Stdout).Run(context.Background(), assistant)
+}
+
+// runBench measures both systems over the hand-labelled cases and prints the
+// comparison.
+//
+// It reaches past the agent on purpose: no events, no steps, no workflow. What
+// the agent does with a judgment is this program's business, and how good the
+// judgment is has to be measurable without it.
+func runBench(apiKey string, jevOnly bool) error {
+	systems := []bench.System{bench.Jev, bench.LLM}
+	if jevOnly {
+		systems = []bench.System{bench.Jev}
+	}
+
+	result, err := bench.Run(context.Background(), bench.Options{
+		Jev:     jev.New(apiKey),
+		Client:  llm.NewOpenRouter(apiKey),
+		Model:   Model,
+		Systems: systems,
+		Dir:     harnessPath("bench"),
+		Progress: func(done, total int, label string) {
+			fmt.Printf("\r  %d/%d  %-20s", done, total, label)
+		},
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Println()
+	result.Table(os.Stdout)
+	return nil
 }
 
 // recoverPending replays every workflow that crashed.
