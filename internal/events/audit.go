@@ -23,6 +23,14 @@ import (
 //
 // A tool NAME repeating is normal: a model may ask for sendReply three times
 // in one task, for three different items. A CALL repeating is the bug.
+//
+// Judgments are counted the same way and reported separately, because they are
+// a different kind of repeat. Nobody is emailed twice when a judgment runs
+// again — you are simply billed twice for a decision you had already made and
+// written down, and after a crash that is the thing most worth proving did not
+// happen. The key is jev.requested's call id, which names the DECISION rather
+// than the question: "verify item-3" recurring is a redraft being checked, and
+// that is the gate working, not a replay leaking.
 
 // Report is what one pass over the log found.
 type Report struct {
@@ -34,6 +42,9 @@ type Report struct {
 	Calls      int // distinct tool calls that actually executed
 	Replayed   int // steps served from a checkpoint instead of running
 	Duplicated []Duplicate
+
+	Judgments int // distinct judgments that were actually bought
+	Rejudged  []Duplicate
 }
 
 // TypeCount is how many of one event type the log holds.
@@ -42,7 +53,8 @@ type TypeCount struct {
 	Count int
 }
 
-// Duplicate is one tool call that ran more than once — a repeated side effect.
+// Duplicate is one call that happened more than once — a repeated side effect,
+// or a judgment paid for twice.
 type Duplicate struct {
 	Call     string
 	Name     string
@@ -64,6 +76,7 @@ func Audit(path string) (Report, error) {
 	byType := map[string]int{}
 	workflows := map[string]bool{}
 	requests := map[string]*Duplicate{}
+	judgments := map[string]*Duplicate{}
 
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
@@ -87,16 +100,9 @@ func Audit(path string) (Report, error) {
 		case StepCached:
 			report.Replayed++
 		case ToolRequested:
-			if e.Call == "" {
-				continue
-			}
-			if seen, ok := requests[e.Call]; ok {
-				seen.Count++
-				continue
-			}
-			requests[e.Call] = &Duplicate{
-				Call: e.Call, Name: e.Name, Workflow: e.Workflow, Count: 1,
-			}
+			tally(requests, e)
+		case JevRequested:
+			tally(judgments, e)
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -105,14 +111,9 @@ func Audit(path string) (Report, error) {
 
 	report.Workflows = len(workflows)
 	report.Calls = len(requests)
-	for _, d := range requests {
-		if d.Count > 1 {
-			report.Duplicated = append(report.Duplicated, *d)
-		}
-	}
-	sort.Slice(report.Duplicated, func(i, j int) bool {
-		return report.Duplicated[i].Count > report.Duplicated[j].Count
-	})
+	report.Judgments = len(judgments)
+	report.Duplicated = repeats(requests)
+	report.Rejudged = repeats(judgments)
 
 	for name, count := range byType {
 		report.ByType = append(report.ByType, TypeCount{Type: name, Count: count})
@@ -122,5 +123,32 @@ func Audit(path string) (Report, error) {
 	return report, nil
 }
 
-// Clean reports whether the log shows no repeated side effects.
-func (r Report) Clean() bool { return len(r.Duplicated) == 0 }
+// tally records one request under its call id, which is what makes the tally
+// "how many times did THIS one happen" rather than "how many of these were
+// there".
+func tally(into map[string]*Duplicate, e Event) {
+	if e.Call == "" {
+		return
+	}
+	if seen, ok := into[e.Call]; ok {
+		seen.Count++
+		return
+	}
+	into[e.Call] = &Duplicate{Call: e.Call, Name: e.Name, Workflow: e.Workflow, Count: 1}
+}
+
+// repeats pulls out the ones that happened more than once, worst first.
+func repeats(from map[string]*Duplicate) []Duplicate {
+	var out []Duplicate
+	for _, d := range from {
+		if d.Count > 1 {
+			out = append(out, *d)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Count > out[j].Count })
+	return out
+}
+
+// Clean reports whether the log shows no repeated side effects and no judgment
+// bought twice.
+func (r Report) Clean() bool { return len(r.Duplicated) == 0 && len(r.Rejudged) == 0 }

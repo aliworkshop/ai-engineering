@@ -94,3 +94,57 @@ func TestTornLineIsCountedNotFatal(t *testing.T) {
 func openAppend(path string) (*os.File, error) {
 	return os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 }
+
+// A judgment is not a side effect, and it does not repeat for the same reason.
+// The same send verified twice is a replay leaking through; the same ITEM
+// verified twice is a redraft being checked, which is the gate doing its job.
+func TestARedraftIsNotARepeatedJudgment(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.jsonl")
+	write(t, path,
+		Event{Type: WorkflowStarted, Workflow: "wf1"},
+		Event{Type: JevRequested, Workflow: "wf1", Name: "triage item-3", Call: "triage-item-3"},
+		// The first draft is blocked, so the model writes another and the gate
+		// runs again — same purpose, different send, different key.
+		Event{Type: JevRequested, Workflow: "wf1", Name: "verify item-3", Call: "verify-call_a"},
+		Event{Type: JevGate, Workflow: "wf1", Name: "item-3", Output: "blocked"},
+		Event{Type: JevRequested, Workflow: "wf1", Name: "verify item-3", Call: "verify-call_b"},
+		Event{Type: JevGate, Workflow: "wf1", Name: "item-3", Output: "pass"},
+		Event{Type: ToolRequested, Workflow: "wf1", Name: "sendReply", Call: "call_b"},
+		Event{Type: WorkflowCompleted, Workflow: "wf1"},
+	)
+
+	report, err := Audit(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.Clean() {
+		t.Fatalf("a redraft was counted as a repeat: %+v", report.Rejudged)
+	}
+	if report.Judgments != 3 {
+		t.Errorf("judgments = %d, want 3", report.Judgments)
+	}
+}
+
+// And the failure this half is there to catch: the same decision paid for
+// twice, because a recovery re-ran a step that had already been checkpointed.
+func TestAJudgmentBoughtTwiceIsReported(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "events.jsonl")
+	write(t, path,
+		Event{Type: JevRequested, Workflow: "wf1", Name: "triage item-1", Call: "triage-item-1"},
+		Event{Type: JevRequested, Workflow: "wf1", Name: "triage item-1", Call: "triage-item-1"},
+	)
+
+	report, err := Audit(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Clean() {
+		t.Fatal("the same triage ran twice and the audit called it clean")
+	}
+	if len(report.Rejudged) != 1 || report.Rejudged[0].Count != 2 {
+		t.Fatalf("rejudged = %+v, want one entry counted twice", report.Rejudged)
+	}
+	if len(report.Duplicated) != 0 {
+		t.Errorf("a judgment was reported as a repeated side effect: %+v", report.Duplicated)
+	}
+}
