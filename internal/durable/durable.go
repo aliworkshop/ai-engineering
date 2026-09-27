@@ -276,3 +276,47 @@ func (s *Store) Pending() ([]Row, error) {
 	}
 	return out, nil
 }
+
+// StepInfo is one completed step, read back off disk. Named for what it is
+// rather than Step, which is already the function that runs one.
+//
+// Output stays raw: this package checkpointed a value it was never told the
+// type of, and handing back json.RawMessage keeps it that way. The caller knows
+// what it stored.
+type StepInfo struct {
+	Name   string
+	Output json.RawMessage
+}
+
+// Read loads a workflow without opening it: what it was asked, and every step
+// it completed, in the order they finished.
+//
+// Without opening it is the point. Open marks a workflow running and saves,
+// which is right when you are about to re-run the body and wrong when you only
+// want to look — reading a finished run should not change its status.
+//
+// This is the quiet dividend of writing checkpoints down. The steps had to be
+// stored in order for a replay to work at all, and stored in order they are
+// also a TRANSCRIPT, which is how a conversation survives the process that had
+// it. Nothing was added to the file to make that possible.
+func (s *Store) Read(id string) (Row, []StepInfo, error) {
+	raw, err := os.ReadFile(s.path(id))
+	if err != nil {
+		return Row{}, nil, err
+	}
+	var st state
+	if err := json.Unmarshal(raw, &st); err != nil {
+		return Row{}, nil, fmt.Errorf("durable: workflow %s is corrupt: %w", id, err)
+	}
+
+	steps := make([]StepInfo, 0, len(st.Order))
+	for _, name := range st.Order {
+		output, ok := st.Steps[name]
+		if !ok {
+			continue // named in Order but absent from Steps: a torn write
+		}
+		steps = append(steps, StepInfo{Name: name, Output: output})
+	}
+	row := Row{ID: st.ID, Input: st.Input, Status: st.Status, Steps: len(st.Steps)}
+	return row, steps, nil
+}

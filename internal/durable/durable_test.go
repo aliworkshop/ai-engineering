@@ -2,6 +2,7 @@ package durable
 
 import (
 	"errors"
+	"reflect"
 	"testing"
 )
 
@@ -83,5 +84,53 @@ func TestPendingFindsOnlyUnfinishedWork(t *testing.T) {
 	}
 	if len(pending) != 1 || pending[0].ID != "crashed" {
 		t.Fatalf("pending = %+v, want just the crashed one", pending)
+	}
+}
+
+// Read is what makes a crashed run readable afterwards: the task it was given
+// and the steps it finished, in order, without touching its status.
+func TestReadReturnsStepsInOrderWithoutOpening(t *testing.T) {
+	store, err := NewStore(t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wf, err := store.Open("wf1", "handle item-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"seed", "model-00", "tool-call_a", "model-01"} {
+		if _, err := Step(wf, name, func() (string, error) { return name, nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := wf.Finish(StatusDone); err != nil {
+		t.Fatal(err)
+	}
+
+	row, steps, err := store.Read("wf1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.Input != "handle item-1" {
+		t.Errorf("input = %q, want the task it was given", row.Input)
+	}
+
+	var names []string
+	for _, step := range steps {
+		names = append(names, step.Name)
+	}
+	want := []string{"seed", "model-00", "tool-call_a", "model-01"}
+	if !reflect.DeepEqual(names, want) {
+		t.Errorf("steps = %v, want %v", names, want)
+	}
+
+	// Reading a finished run must not resurrect it: Open would mark it
+	// running again, which is right before a replay and wrong before a read.
+	if row.Status != StatusDone {
+		t.Errorf("status = %q after Read, want it left alone", row.Status)
+	}
+	if again, _, _ := store.Read("wf1"); again.Status != StatusDone {
+		t.Errorf("status = %q on a second read, want %q", again.Status, StatusDone)
 	}
 }
