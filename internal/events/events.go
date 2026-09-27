@@ -36,6 +36,20 @@ const (
 	ToolRequested  = "tool.requested"
 	ToolCompleted  = "tool.completed"
 	ModelCompleted = "model.completed"
+
+	// The judgment events. JevRequested and JevAnswered are the round trip to
+	// the System One model; the two below are what our own code DECIDED with
+	// the probabilities it got back.
+	//
+	// Keeping those apart is the point. A jev.answered line says the model
+	// thinks an article is relevant with probability 0.94; a jev.triaged line
+	// says we therefore included it, because 0.94 is over a threshold written
+	// in Go. When the agent does something surprising, the interesting
+	// question is almost always which of those two steps to look at.
+	JevRequested = "jev.requested"
+	JevAnswered  = "jev.answered"
+	JevTriaged   = "jev.triaged"
+	JevGate      = "jev.gate"
 )
 
 // glyph is one character per event type, so a stream is scannable without
@@ -51,6 +65,10 @@ var glyph = map[string]string{
 	ModelCompleted:       "🧠",
 	ToolRequested:        "⚙",
 	ToolCompleted:        "✓",
+	JevRequested:         "?",
+	JevAnswered:          "⚡",
+	JevTriaged:           "🏷",
+	JevGate:              "🛡",
 	"memory.compacted":   "🗜",
 	"agent.handoff":      "↪",
 	"plan.created":       "🗺",
