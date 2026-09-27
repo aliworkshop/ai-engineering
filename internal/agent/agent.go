@@ -32,7 +32,11 @@ import (
 // maxSteps caps how many tool rounds one question may take before we give up.
 // Without it, a model that keeps asking for the same tool loops until your
 // credit does.
-const maxSteps = 10
+//
+// Fifteen rather than ten because a program is a thing you iterate on: the
+// model writes one, reads the error, fixes it, runs it again. A ceiling that
+// cut that short would look like the sandbox failing when it was working.
+const maxSteps = 15
 
 // ToolBox is the set of tools the agent can use. tools.Registry satisfies it;
 // depending on the interface rather than the struct keeps this package free of

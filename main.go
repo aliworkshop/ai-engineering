@@ -17,16 +17,19 @@
 //	go run . -resume <id>    replay one workflow
 //	go run . -recover        finish what crashed, then carry on that conversation
 //	go run . -audit          did any work happen twice?
+//	go run . -sandbox        poke the sandbox boundary directly, then exit
 //	go run . -crash-at 2     die mid-run, after real side effects
 package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/joho/godotenv"
 
@@ -34,6 +37,7 @@ import (
 	"github.com/aliworkshop/ai-engineering-course/internal/durable"
 	"github.com/aliworkshop/ai-engineering-course/internal/events"
 	"github.com/aliworkshop/ai-engineering-course/internal/llm"
+	"github.com/aliworkshop/ai-engineering-course/internal/sandbox"
 	"github.com/aliworkshop/ai-engineering-course/internal/tools"
 	"github.com/aliworkshop/ai-engineering-course/internal/ui"
 )
@@ -58,6 +62,7 @@ func main() {
 	resume := flag.String("resume", "", "replay a workflow that stopped early")
 	recoverMode := flag.Bool("recover", false, "finish what crashed, then carry on that conversation in the REPL")
 	audit := flag.Bool("audit", false, "read the event log back and report whether any work happened twice")
+	testBox := flag.Bool("sandbox", false, "exercise the sandbox boundary directly, then exit — no model, no key")
 	crashAt := flag.Int("crash-at", -1, "DEMO: exit before this step, simulating a crash mid-task")
 	flag.Parse()
 
@@ -72,6 +77,10 @@ func main() {
 	}
 	if *list {
 		exitOn(listWorkflows())
+		return
+	}
+	if *testBox {
+		checkSandbox()
 		return
 	}
 
@@ -132,6 +141,45 @@ func main() {
 	}
 
 	ui.New(os.Stdin, os.Stdout).Run(context.Background(), session)
+}
+
+// checkSandbox pokes the boundary from four sides, with no agent and no model
+// in the way. Running it is the fastest way to believe the thing.
+func checkSandbox() {
+	show := func(label, code string) {
+		result := sandbox.Run(code, tools.SandboxAPI(), 2*time.Second)
+		raw, err := json.Marshal(result)
+		if err != nil {
+			// Swallowing this printed a blank line and cost an hour.
+			fmt.Printf("\n%s\n  cannot render the result: %v\n", label, err)
+			return
+		}
+		fmt.Printf("\n%s\n  %s\n", label, raw)
+	}
+
+	// 1. What it is FOR: fetch, group, compare and compute, in one program.
+	show("1) code mode (fetch, group, dedupe, compute):", `
+		const charges = tools.getCharges("cus_88121");
+		const groups = {};
+		for (const c of charges) {
+			const key = c.amount + "|" + c.description;
+			(groups[key] = groups[key] || []).push(c);
+		}
+		const dupes = Object.values(groups).filter((g) => g.length > 1);
+		return { duplicateId: dupes[0][1].id, refund: dupes[0][0].amount / 100 };
+	`)
+
+	// 2. A runaway loop never yields, so only the clock stops it.
+	show("2) infinite loop (killed by the timeout):", "while (true) {}")
+
+	// 3. No host access — require was never in the world we built.
+	show("3) require('fs') (blocked):", `return require("fs").readdirSync(".")`)
+
+	// 4. An ordinary bug comes back as something the model can read and fix.
+	show("4) a bug (structured error):", "return totallyUndefined.value")
+
+	// 5. And silence gets a nudge rather than an empty answer.
+	show("5) no return value (hint):", `tools.getCharges("cus_88121");`)
 }
 
 // recoverPending replays every workflow that crashed, and names the last one
