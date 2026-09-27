@@ -22,6 +22,7 @@ tools are harmless. The fourth emails the customer.
 go run . -sample          # the three sample items, one shot
 go run .                  # recover anything that crashed, then talk to it
 go run . -list            # what the runtime is holding
+go run . -recover         # finish what crashed, then carry on that conversation
 go run . -audit           # did any work happen twice?
 go run . -crash-at 2      # die mid-task, after real side effects
 ```
@@ -77,10 +78,14 @@ There is no separate recovery path. **Resuming is running.**
 That only works if the body is *deterministic*, which is the golden rule of
 durable workflows: everything non-deterministic — the model call, the tool
 call, the clock — happens inside a step, and everything outside one is rebuilt
-identically on replay. It is also why the agent no longer keeps a conversation
-in a field. A run's messages are local, rebuilt from the workflow's own input
-and its steps, so a fresh process replays them exactly. The cost is that the
-REPL stops remembering across turns; each line is a task now.
+identically on replay. It is also why the agent keeps no conversation in a
+field. A run's messages are local, rebuilt from the workflow's own input and
+its steps, so a fresh process replays them exactly.
+
+That does not mean the REPL has to forget. A `Session` carries the thread from
+turn to turn, and hands it to the next workflow as its `seed` step — checkpointed
+like everything else, so the turn stays replayable and `-recover` can rebuild the
+thread off disk. State in a field breaks replay; state in a step is replay.
 
 Three details that are the difference between this working and looking like it
 works:
@@ -131,6 +136,61 @@ recovering bb657985 from its last completed step…
 
 Every `⏩` is work that did not happen again: a model turn not re-billed, a
 tool call not re-run. Then live steps carry it to the end.
+
+### …and then you can keep talking
+
+`-recover` does the same thing and drops you into the REPL holding the
+conversation it just finished:
+
+```sh
+go run . -recover
+```
+
+```
+recovering 66723471 from its last completed step…
+  ⏩  step.cached           66723471  {"name":"model-00"}
+  ✔  workflow.completed    66723471  {"output":"I handled the following work items…"}
+
+carrying on the conversation from 66723471.
+
+you> what exactly did you send to item-2? quote the draft.
+
+agent> For item-2, I sent the following draft reply:
+       "Thank you for reporting the issue with the export button on Safari.
+        This is a known bug (TICKET-4412). As a workaround, we suggest using
+        Chrome or trying the CSV export option for now."
+```
+
+Nothing was held in memory to make that work. The process that drafted that
+reply is gone. Every model turn and every tool result was written down because
+they *had* to be, in order to replay — and that same record is a transcript.
+`Continue` reads it back with `store.Read` and seeds the next turn with it.
+
+The seeding is the part worth looking at, because the obvious version of it is
+wrong. A conversation cannot live in a field on the `Agent`: a recovered run
+has no such field, so it would rebuild a *different* conversation and carry on
+from somewhere the checkpoints never were. So the conversation travels as **a
+step like any other**:
+
+```go
+seed, err := step(wf, "seed", func() ([]Msg, error) { return seed, nil })
+```
+
+On a fresh run that writes down what it was handed; on a replay it hands back
+what the crashed process was working from. `cat` a follow-up workflow and the
+whole prior thread is sitting in it, which is also why each turn stays
+independently replayable.
+
+One detail that is easy to get wrong: an assistant message asking for tools is
+only legal if a result for **each** of them follows it. Rebuilding half a pair
+produces a conversation the next model call refuses outright, so `transcript`
+drops a model turn whose results it cannot find rather than emitting it alone.
+
+Recovery here returns when the replaying is *done*, because the replaying is
+the function: a workflow is a file on this disk and resuming it is a call.
+That is worth noticing next to `session-7-durable-dbos`, where recovery happens
+inside the engine's own launch and the caller has to wait on results it did not
+start.
 
 ## Proving it: `-audit`
 
@@ -230,8 +290,8 @@ anything outer, so each layer can be tested — or replaced — on its own.
 ```
 main.go                    wire the pieces together, then run
   └── internal/
-        ui/       Console  the REPL. Owns stdin
-        agent/    Agent    the loop and the system prompt
+        ui/       Console  the REPL. Owns stdin, knows only an Assistant
+        agent/    Agent    the loop, the prompt, and Session
         tools/    Registry the Tool interface, and every tool
         durable/  Workflow checkpoint · crash · resume          ┐ the
         events/   Event    the typed stream, console and log    ┘ harness
@@ -274,9 +334,14 @@ Three seams carry the whole thing:
 
 Two more seams: **`events.Emitter`** and **`agent.Store`**. The agent does not
 print — it emits — and it does not know what durability is, it just opens a
-workflow. Both are optional: a nil emitter is a silent agent, and **a nil
-store is the part 1 agent**, still there and still runnable, because the
-durability claim means nothing until you can run the other one.
+workflow and reads one back. Both are optional: a nil emitter is a silent
+agent, and **a nil store is the part 1 agent**, still there and still runnable,
+because the durability claim means nothing until you can run the other one.
+
+And one on the way out: **`ui.Assistant`**, a single `Ask` method declared by
+the terminal rather than imported from the agent. An empty conversation and one
+recovered from a dead process are the same shape to a REPL, which is the only
+reason `-recover` needed no new front-end.
 
 ## The loop (`internal/agent`)
 
@@ -345,7 +410,7 @@ purpose, and each one is a session's worth of work:
 |---|---|
 | be trusted with `sendReply` | **human-in-the-loop** — a gate the dangerous tool has to pass, and that can wait for days without holding a process open |
 | run model-written code safely | **a sandbox** — one mediated door, with the environment stripped and a timer |
-| hold a conversation across tasks | **memory** — history, state and context kept apart, and compacted against a token budget |
+| remember anything past this process | **memory** — a `Session` keeps a thread alive and `-recover` rebuilds one off disk, but both die with the terminal. Real memory means history, state and context kept apart, and compacted against a token budget |
 | stay affordable in a long task | **context management** — the messages are sent whole and grow all run |
 | be shown to be working | **evals** — no tests, no scores, nothing but your own reading of the replies. The seams above are what make them cheap to write: a stub `ToolBox` is three lines |
 

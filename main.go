@@ -15,6 +15,7 @@
 //	go run . -task "..."     work one task, then exit
 //	go run . -list           what the runtime is holding
 //	go run . -resume <id>    replay one workflow
+//	go run . -recover        finish what crashed, then carry on that conversation
 //	go run . -audit          did any work happen twice?
 //	go run . -crash-at 2     die mid-run, after real side effects
 package main
@@ -55,6 +56,7 @@ func main() {
 	task := flag.String("task", "", "work one task, then exit")
 	list := flag.Bool("list", false, "list workflows and their status")
 	resume := flag.String("resume", "", "replay a workflow that stopped early")
+	recoverMode := flag.Bool("recover", false, "finish what crashed, then carry on that conversation in the REPL")
 	audit := flag.Bool("audit", false, "read the event log back and report whether any work happened twice")
 	crashAt := flag.Int("crash-at", -1, "DEMO: exit before this step, simulating a crash mid-task")
 	flag.Parse()
@@ -103,7 +105,8 @@ func main() {
 	// does on launch: find every workflow that was mid-flight when the process
 	// last died and replay it forward. Nothing asks you to do it, and nothing
 	// re-runs — which is the whole claim, made without being announced.
-	exitOn(recoverPending(assistant, store))
+	recovered, err := recoverPending(assistant, store)
+	exitOn(err)
 
 	if *sample {
 		*task = agent.SampleTask
@@ -113,24 +116,51 @@ func main() {
 		return
 	}
 
-	ui.New(os.Stdin, os.Stdout).Run(context.Background(), assistant)
+	// The REPL always talks to a session, so the conversation travels into
+	// each turn's workflow rather than living in this process. -recover is
+	// only the difference between starting one empty and rebuilding one from
+	// the checkpoints of the run that just finished.
+	session := assistant.Session()
+	if *recoverMode {
+		if recovered == "" {
+			fmt.Println("\nnothing was waiting to be recovered.")
+		} else {
+			session, err = assistant.Continue(recovered)
+			exitOn(err)
+			fmt.Printf("\ncarrying on the conversation from %s.\n", recovered)
+		}
+	}
+
+	ui.New(os.Stdin, os.Stdout).Run(context.Background(), session)
 }
 
-// recoverPending replays every workflow that crashed.
-func recoverPending(assistant *agent.Agent, store *durable.Store) error {
+// recoverPending replays every workflow that crashed, and names the last one
+// it saw through to an answer — which is the one -recover then carries into the
+// REPL.
+//
+// It returns when the replaying is done, because here the replaying IS the
+// function: a workflow is a file on this disk and resuming it is a call, so
+// there is no queue to wait on and no window to guess at. That is worth
+// noticing next to session-7-durable-dbos, where recovery happens inside the
+// engine's own launch and the caller has to wait for results it did not start.
+func recoverPending(assistant *agent.Agent, store *durable.Store) (string, error) {
 	pending, err := store.Pending()
 	if err != nil {
-		return err
+		return "", err
 	}
+
+	var last string
 	for _, row := range pending {
 		fmt.Printf("recovering %s from its last completed step…\n", row.ID)
 		if _, err := assistant.Resume(context.Background(), row.ID); err != nil {
 			// One unrecoverable workflow should not stop the others, or the
 			// process. Report it and carry on.
 			fmt.Printf("  %s could not be recovered: %v\n", row.ID, err)
+			continue
 		}
+		last = row.ID
 	}
-	return nil
+	return last, nil
 }
 
 // once works a single task and prints the answer — the shape anything outside
