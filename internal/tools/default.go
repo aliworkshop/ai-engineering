@@ -1,5 +1,7 @@
 package tools
 
+import "github.com/aliworkshop/ai-engineering-course/internal/sandbox"
+
 // Default builds the standard toolset. This is the single place that decides
 // which tools the agent has: four that change nothing, and one that emails a
 // customer. Nothing in the list marks that difference yet — which is exactly
@@ -7,13 +9,13 @@ package tools
 //
 // runCode is the odd one out in a different way. It changes nothing either,
 // but it is the only tool that runs code nobody in this repo wrote, which is
-// why it is the only one with a door in front of it.
-func Default() *Registry {
+// why it is the only one with a door in front of it — box.
+func Default(box *sandbox.Box) *Registry {
 	return NewRegistry(
 		ClassifyItem{},
 		SearchKnowledgeBase{},
 		DraftReply{},
 		SendReply{},
-		RunCode{},
+		RunCode{Box: box},
 	)
 }

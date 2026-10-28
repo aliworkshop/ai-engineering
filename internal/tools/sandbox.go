@@ -14,9 +14,10 @@ import (
 // RunCodeTool is the advertised name.
 const RunCodeTool = "runCode"
 
-// codeTimeout is how long a program gets. Two seconds is generous for
-// arithmetic over a handful of charges and short enough that a runaway loop is
-// noticed rather than waited on.
+// codeTimeout is how long a program gets, counted from starting node — not
+// from starting the container, which is the sandbox's cost and not the
+// program's. Two seconds is generous for arithmetic over a handful of charges
+// and short enough that a runaway loop is noticed rather than waited on.
 const codeTimeout = 2 * time.Second
 
 // Charge is one line on a customer's statement. Amounts are in cents, which is
@@ -41,21 +42,37 @@ var Charges = map[string][]Charge{
 	},
 }
 
-// SandboxAPI is the whole world a program can reach.
+// SandboxWorld is the whole world a program can reach.
 //
 // Both functions only READ, and that is the rule that makes the rest of this
 // safe to build. A step is replayed after a crash, and replaying a lookup costs
 // nothing; replaying a refund costs a customer. So sendReply stays outside,
 // an ordinary tool with an ordinary exactly-once checkpoint, and nothing that
-// changes the world is ever put in this map.
-func SandboxAPI() map[string]any {
-	return map[string]any{
-		"getCharges": func(customerID string) []Charge {
-			return Charges[customerID]
+// changes the world is ever put in here.
+//
+// The program runs in another container, and a Go function cannot follow it
+// there. So the world goes in as data — the charges and the knowledge base —
+// with the two functions over it written in JavaScript. searchKnowledgeBase is
+// searchKB again, line for line; TestSandboxSearchMatchesSearchKB holds them
+// to the same answers.
+func SandboxWorld() sandbox.World {
+	return sandbox.World{
+		Data: map[string]any{
+			"charges":       Charges,
+			"knowledgeBase": KnowledgeBase,
+			"miss":          kbMiss,
 		},
-		"searchKnowledgeBase": func(query string) []string {
-			return searchKB(query)
-		},
+		Tools: `{
+			getCharges: (customerId) => data.charges[customerId] || [],
+			searchKnowledgeBase: (query) => {
+				const q = String(query).toLowerCase();
+				const hits = Object.keys(data.knowledgeBase)
+					.filter((topic) => q.includes(topic))
+					.sort()
+					.map((topic) => data.knowledgeBase[topic]);
+				return hits.length ? hits : [data.miss];
+			},
+		}`,
 	}
 }
 
@@ -65,7 +82,9 @@ func SandboxAPI() map[string]any {
 // chain of chatty calls with the arithmetic done in the model's head, one
 // program fetches, groups, compares and computes, and hands back an answer.
 // What makes that affordable is that it runs behind one door.
-type RunCode struct{}
+type RunCode struct {
+	Box *sandbox.Box
+}
 
 func (RunCode) Spec() components.ChatFunctionTool {
 	return defineTool(RunCodeTool,
@@ -79,7 +98,7 @@ func (RunCode) Spec() components.ChatFunctionTool {
 		`{"type":"object","properties":{"code":{"type":"string"}},"required":["code"]}`)
 }
 
-func (RunCode) Run(_ context.Context, args string) (string, error) {
+func (r RunCode) Run(ctx context.Context, args string) (string, error) {
 	var a struct {
 		Code string `json:"code"`
 	}
@@ -89,5 +108,5 @@ func (RunCode) Run(_ context.Context, args string) (string, error) {
 	if strings.TrimSpace(a.Code) == "" {
 		return "", fmt.Errorf("code is required")
 	}
-	return marshal(sandbox.Run(a.Code, SandboxAPI(), codeTimeout))
+	return marshal(r.Box.Run(ctx, a.Code, SandboxWorld(), codeTimeout))
 }

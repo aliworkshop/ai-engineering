@@ -17,7 +17,7 @@
 //	go run . -resume <id>    replay one workflow
 //	go run . -recover        finish what crashed, then carry on that conversation
 //	go run . -audit          did any work happen twice?
-//	go run . -sandbox        poke the sandbox boundary directly, then exit
+//	go run . -sandbox        poke the sandbox boundary directly, then exit (needs `docker compose up -d`)
 //	go run . -crash-at 2     die mid-run, after real side effects
 package main
 
@@ -62,7 +62,7 @@ func main() {
 	resume := flag.String("resume", "", "replay a workflow that stopped early")
 	recoverMode := flag.Bool("recover", false, "finish what crashed, then carry on that conversation in the REPL")
 	audit := flag.Bool("audit", false, "read the event log back and report whether any work happened twice")
-	testBox := flag.Bool("sandbox", false, "exercise the sandbox boundary directly, then exit — no model, no key")
+	testBox := flag.Bool("sandbox", false, "exercise the sandbox boundary directly, then exit — no model, no OpenRouter key")
 	crashAt := flag.Int("crash-at", -1, "DEMO: exit before this step, simulating a crash mid-task")
 	flag.Parse()
 
@@ -100,7 +100,7 @@ func main() {
 	store, err := durable.NewStore(harnessPath("wf"), bus)
 	exitOn(err)
 
-	assistant := agent.New(llm.NewOpenRouter(apiKey), Model, tools.Default()).
+	assistant := agent.New(llm.NewOpenRouter(apiKey), Model, tools.Default(sandbox.New())).
 		WithEvents(bus).
 		WithStore(store).
 		WithCrashAt(*crashAt)
@@ -143,11 +143,14 @@ func main() {
 	ui.New(os.Stdin, os.Stdout).Run(context.Background(), session)
 }
 
-// checkSandbox pokes the boundary from four sides, with no agent and no model
-// in the way. Running it is the fastest way to believe the thing.
+// checkSandbox pokes the boundary from several sides, with no agent and no
+// model in the way. Running it is the fastest way to believe the thing. Each
+// poke gets its own container, so this takes a few seconds per line — that
+// is what a real boundary costs, and it is worth seeing once.
 func checkSandbox() {
+	box := sandbox.New()
 	show := func(label, code string) {
-		result := sandbox.Run(code, tools.SandboxAPI(), 2*time.Second)
+		result := box.Run(context.Background(), code, tools.SandboxWorld(), 2*time.Second)
 		raw, err := json.Marshal(result)
 		if err != nil {
 			// Swallowing this printed a blank line and cost an hour.
@@ -172,8 +175,17 @@ func checkSandbox() {
 	// 2. A runaway loop never yields, so only the clock stops it.
 	show("2) infinite loop (killed by the timeout):", "while (true) {}")
 
-	// 3. No host access — require was never in the world we built.
-	show("3) require('fs') (blocked):", `return require("fs").readdirSync(".")`)
+	// 3. No host access. The program can see a filesystem — the container's,
+	// which is not this machine's — and it cannot reach the network at all.
+	show("3) the host (out of reach):", `
+		const fs = process.mainModule.require("fs");
+		return { home: fs.existsSync("/Users"), files: fs.readdirSync("/tmp") };
+	`)
+	show("3b) the network (denied):", `
+		return process.mainModule.require("child_process")
+			.execSync("node -e \"fetch('https://example.com').then(() => console.log('reached it'), (e) => console.log('blocked', e.cause && e.cause.code))\"")
+			.toString().trim();
+	`)
 
 	// 4. An ordinary bug comes back as something the model can read and fix.
 	show("4) a bug (structured error):", "return totallyUndefined.value")
