@@ -1,0 +1,64 @@
+# The OpenSandbox server: the one thing that may start containers on this
+# machine. runCode asks it for a fresh, disposable container per program and
+# throws it away afterwards.
+#
+#   docker compose up -d
+#
+# It needs the Docker socket because that is its whole job. The sandboxes it
+# starts do not get it.
+configs:
+  opensandbox-config:
+    content: |
+      [server]
+      host = "0.0.0.0"
+      port = 8080
+      # From .env, the same key the agent sends.
+      api_key = "${OPEN_SANDBOX_API_KEY:?set OPEN_SANDBOX_API_KEY in .env}"
+
+      [proxy]
+      # The server lives on its own network; the sandboxes it starts are on
+      # Docker's bridge. Reach them through their host-published ports.
+      resolve_internal = false
+
+      [log]
+      level = "INFO"
+
+      [runtime]
+      type = "docker"
+      execd_image = "opensandbox/execd:v1.1.0"
+
+      [egress]
+      # Present so a sandbox can be created with a deny-all network policy.
+      image = "opensandbox/egress:v1.1.7"
+      readiness_timeout_seconds = 30.0
+
+      [docker]
+      network_mode = "bridge"
+      host_ip = "host.docker.internal"
+      port_range_min = 40000
+      port_range_max = 60000
+      # Publish sandbox ports on loopback only: execd is reachable from this
+      # machine, not from the network it sits on.
+      publish_host = "127.0.0.1"
+      drop_capabilities = ["AUDIT_WRITE", "MKNOD", "NET_ADMIN", "NET_RAW", "SYS_ADMIN", "SYS_MODULE", "SYS_PTRACE", "SYS_TIME", "SYS_TTY_CONFIG"]
+      no_new_privileges = true
+      pids_limit = 256
+
+      [ingress]
+      mode = "direct"
+
+services:
+  opensandbox-server:
+    image: opensandbox/server:release-1.1.0
+    container_name: opensandbox-server
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    configs:
+      - source: opensandbox-config
+        target: /etc/opensandbox/config.toml
+    environment:
+      - SANDBOX_CONFIG_PATH=/etc/opensandbox/config.toml
