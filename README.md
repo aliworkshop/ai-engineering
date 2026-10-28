@@ -25,13 +25,14 @@ program and the only one whose input nobody here wrote, so it is the only one
 with a door in front of it.
 
 ```sh
-# needs OPENROUTER_API_KEY in .env
+# needs OPENROUTER_API_KEY and OPEN_SANDBOX_API_KEY (any string) in .env
+docker compose up -d      # the OpenSandbox server runCode's programs run under
 go run . -sample          # the three sample items, one shot
 go run .                  # recover anything that crashed, then talk to it
 go run . -list            # what the runtime is holding
 go run . -recover         # finish what crashed, then carry on that conversation
 go run . -audit           # did any work happen twice?
-go run . -sandbox         # poke the boundary directly — no model, no key
+go run . -sandbox         # poke the boundary directly — no model, no OpenRouter key
 go run . -crash-at 2      # die mid-task, after real side effects
 ```
 
@@ -78,33 +79,46 @@ tool calls and the arithmetic done in the model's head, which is the kind of
 arithmetic models get quietly wrong.
 
 That is the *reason* for this part. The interesting half is what it costs, and
-what the whole of the answer looks like:
+what the whole of the answer looks like. Each program gets a container of its
+own, from an [OpenSandbox](https://github.com/opensandbox-group/OpenSandbox)
+server, and the container is thrown away afterwards:
 
 ```go
-vm := goja.New()
-vm.Set("tools", api)      // the functions we chose
-vm.Set("console", …)       // captures logs
-time.AfterFunc(timeout, func() { vm.Interrupt("execution timed out") })
-value, err := vm.RunString("(function(){" + code + "})()")
+box, _ := opensandbox.CreateSandbox(ctx, config, opensandbox.SandboxCreateOptions{
+	Image:          "node:22-alpine",
+	ResourceLimits: opensandbox.ResourceLimits{"cpu": "500m", "memory": "256Mi"},
+	NetworkPolicy:  &opensandbox.NetworkPolicy{DefaultAction: "deny"},
+})
+defer box.Kill(ctx)
+box.UploadFile(ctx, program, …)                   // the world, the runner, the code
+box.RunCommandWithOpts(ctx, opensandbox.RunCommandRequest{
+	Command: "node /tmp/program.js",
+	Timeout: timeout.Milliseconds(),              // the clock kills the process
+	UID:     &node, GID: &node,                   // not root
+}, nil)
 ```
 
-**There is no `require`, no `process`, no `fs`, no `fetch` — and they are not
-blocked.** They were never in the world. That is worth saying twice, because a
-sandbox built by *removing* dangerous things is a list you will forget an entry
-from; one built by naming the few safe things is a world where everything else
-never existed.
+**The program can reach `process`, `fs` and `child_process` — and none of it
+matters.** The filesystem it can see is the container's, the network is not
+there at all, the memory limit is enforced by the kernel rather than by asking,
+and the clock *kills* the process instead of interrupting it. The boundary is
+no longer the list of things put in the program's world; it is the machine
+around it.
 
 ```sh
-go run . -sandbox      # four pokes at the boundary, no model and no key needed
+docker compose up -d   # once: the server, which is the only thing that may start containers
+go run . -sandbox      # pokes at the boundary, no model and no OpenRouter key needed
 ```
 
 ```
 1) code mode (fetch, group, dedupe, compute):
   {"ok":true,"result":{"duplicateId":"ch_002","refund":49},"logs":[]}
 2) infinite loop (killed by the timeout):
-  {"ok":false,"error":"execution timed out after 2s at <eval>:1:2(1)","logs":[]}
-3) require('fs') (blocked):
-  {"ok":false,"error":"ReferenceError: require is not defined at <eval>:1:27(3)","logs":[]}
+  {"ok":false,"error":"execution timed out after 2s","logs":[]}
+3) the host (out of reach):
+  {"ok":true,"result":{"files":["…stderr","…stdout","program.js"],"home":false},"logs":[]}
+3b) the network (denied):
+  {"ok":true,"result":"blocked ENOTFOUND","logs":[]}
 4) a bug (structured error):
   {"ok":false,"error":"ReferenceError: totallyUndefined is not defined","logs":[]}
 ```
@@ -112,15 +126,16 @@ go run . -sandbox      # four pokes at the boundary, no model and no key needed
 Every one of those is JSON going back to the model, and that is the point of
 case 4. A program that blew up should read as *something to fix*, not as a wall:
 the model reads the error, rewrites the program, and runs it again. That loop is
-also why `maxSteps` went from 10 to 15.
+also why `maxSteps` went from 10 to 15. A syntax error, a timeout and running
+out of memory each come back as their own sentence for the same reason.
 
-### The API is read-only, and that is a durability decision
+### The world is read-only data, and that is a durability decision
 
 ```go
-func SandboxAPI() map[string]any {
-	return map[string]any{
-		"getCharges":          func(customerID string) []Charge { … },
-		"searchKnowledgeBase": func(query string) []string      { … },
+func SandboxWorld() sandbox.World {
+	return sandbox.World{
+		Data:  map[string]any{"charges": Charges, "knowledgeBase": KnowledgeBase, …},
+		Tools: `{ getCharges: (customerId) => …, searchKnowledgeBase: (query) => … }`,
 	}
 }
 ```
@@ -128,26 +143,35 @@ func SandboxAPI() map[string]any {
 Two functions, both of which only look things up. That is not caution for its
 own sake — it is what makes `runCode` safe to checkpoint like any other step. A
 step gets replayed after a crash, and replaying a lookup costs nothing. Put
-`sendReply` in that map and a replay would email the customer again, so it stays
+`sendReply` in there and a replay would email the customer again, so it stays
 outside: an ordinary tool, with an ordinary exactly-once guarantee.
 
-### What it does not do
+The other thing the container changed is visible here. A Go function cannot
+follow a program into another machine, so the world goes in as **data**, frozen,
+with the two functions over it written in JavaScript. `searchKnowledgeBase` is
+now written twice, once per language, and a test holds the two to the same
+answers. That duplication is the honest price of a real boundary: whatever
+crosses it has to be something you can write down.
 
-Honesty is the useful part here. The interpreter runs **inside our own process**,
-so the timeout *interrupts* the code rather than killing a machine out from
-under it, and a program that allocates without pause is a problem this file
-cannot solve. This stops accidents, not a determined attacker. Production runs
-untrusted code in a disposable container or a micro-VM.
+### What it costs
+
+Starting a container is a couple of seconds, so a `runCode` step now takes about
+three where it took milliseconds — fine for a support agent, and the first thing
+to fix with a warm pool if it were not. The agent also needs a server running
+next to it, with the Docker socket, which is a real piece of infrastructure
+rather than a library. Docker containers share the host's kernel; for code from
+someone actively hostile, OpenSandbox can run the same API on gVisor, Kata or
+Firecracker, and nothing on this side of the door changes.
 
 What does not change is the shape. Every dangerous capability goes through one
 mediated door — and whether that door opens onto an interpreter or a container
-is a deployment decision, not an architectural one.
+is a deployment decision, not an architectural one. This part made exactly that
+decision, and `internal/sandbox` is the only package that noticed.
 
-Two smaller divergences from the TypeScript this is a port of, both in the name
-of less machinery: the API here is **synchronous**, so the model writes
-`tools.getCharges(id)` with no `await` (the tool description says so, and an
-`await` comes back as a syntax error it can fix); and one new dependency,
-`goja`, which is a JavaScript interpreter in pure Go. `go.mod` now lists three.
+One smaller divergence from the TypeScript this is a port of: the API here is
+**synchronous**, so the model writes `tools.getCharges(id)` with no `await` (the
+tool description says so, and an `await` comes back as a syntax error it can
+fix). And one new dependency, the OpenSandbox Go SDK. `go.mod` now lists three.
 
 ## Durable execution (`internal/durable`)
 
@@ -394,7 +418,7 @@ main.go                    wire the pieces together, then run
         ui/       Console  the REPL. Owns stdin, knows only an Assistant
         agent/    Agent    the loop, the prompt, and Session
         tools/    Registry the Tool interface, and every tool
-        sandbox/  Run      the one door model-written code goes through
+        sandbox/  Box      the one door model-written code goes through
         durable/  Workflow checkpoint · crash · resume          ┐ the
         events/   Event    the typed stream, console and log    ┘ harness
         llm/               the one place the OpenRouter client is built
@@ -491,8 +515,8 @@ Work through every item, then briefly summarize what you did.`
 
 Line 2 is the whole of part 3 as far as the model is concerned. Note what it
 does *not* say: nothing about what the code may not do, because that is not the
-prompt's job. The sandbox is a world with four things in it; a sentence asking
-the model to behave would be a sentence to jailbreak.
+prompt's job. The sandbox is a container with no network and nothing of ours in
+it; a sentence asking the model to behave would be a sentence to jailbreak.
 
 Three things about it are worth more than the text itself:
 
@@ -517,7 +541,7 @@ purpose, and each one is a session's worth of work:
 | It cannot… | What fixes it |
 |---|---|
 | be trusted with `sendReply` | **human-in-the-loop** — a gate the dangerous tool has to pass, and that can wait for days without holding a process open |
-| run model-written code *safely* | **a real isolate** — the sandbox is one mediated door with a timer, and it stops accidents. The interpreter shares this process, so a determined attacker or a memory hog is still a problem: production wants a container or a micro-VM behind the same door |
+| run model-written code *fast* | **a warm pool** — every program gets a fresh container, which is the right default and costs seconds. OpenSandbox has pools; a kernel-level runtime (gVisor, Firecracker) is the next step for code from someone hostile, behind the same door |
 | remember anything past this process | **memory** — a `Session` keeps a thread alive and `-recover` rebuilds one off disk, but both die with the terminal. Real memory means history, state and context kept apart, and compacted against a token budget |
 | stay affordable in a long task | **context management** — the messages are sent whole and grow all run |
 | be shown to be working | **evals** — no tests, no scores, nothing but your own reading of the replies. The seams above are what make them cheap to write: a stub `ToolBox` is three lines |
