@@ -47,6 +47,9 @@ var KnowledgeBase = map[string]string{
 	"pricing": "Team plans are $20/seat/mo with a volume discount at 25+ seats.",
 }
 
+// kbMiss is what a search that touches no topic returns.
+const kbMiss = "No exact match - use your judgment."
+
 // Categories are the only classifications a work item may get. An enum in the
 // schema rather than a free string, so the model cannot invent a fifth.
 var Categories = []string{"billing", "technical", "sales", "other"}
@@ -124,7 +127,7 @@ func searchKB(query string) []string {
 		hits = append(hits, KnowledgeBase[topic])
 	}
 	if len(hits) == 0 {
-		return []string{"No exact match - use your judgment."}
+		return []string{kbMiss}
 	}
 	return hits
 }
