@@ -11,9 +11,12 @@
 > every move an event, and two failures staged on purpose. **Step 6** was
 > [part 2 — durable
 > execution](https://github.com/pjsofts/ai-engineering-1/tree/main/week3-workshop/part2-durable),
-> which fixed the first. **Step 7** is here —
+> which fixed the first. **Step 7** was
 > [part 3 — the sandbox](https://github.com/pjsofts/ai-engineering-1/tree/main/week3-workshop/part3-sandbox):
-> the agent can write and run code, behind one door.
+> the agent can write and run code, behind one door. **Step 8** is here —
+> [part 4 — memory](https://github.com/pjsofts/ai-engineering-1/tree/main/week3-workshop/part4-memory):
+> history, state and context pulled apart, and the context compacted against
+> a token budget.
 
 This is a **support triage agent**. Give it work items and it classifies each
 one, looks up whatever it needs, drafts a reply, and sends it. Four of those
@@ -57,6 +60,90 @@ Part 1 staged two failures deliberately. This part answers the first.
 So the remaining hole is narrower and sharper: the agent can no longer email
 a customer *twice by accident*. It can still email them *once without asking*.
 That is what part 7's approval gate is for.
+
+## Memory (`internal/agent/memory.go`)
+
+Until this part, one slice was three things at once. Every message the run
+produced was its **history**, was its **state**, and was sent to the model on
+every turn — so each turn cost more than the one before, and a task long enough
+would not fit at all. Part 4 pulls them apart:
+
+| | what it is | where it lives |
+|---|---|---|
+| **history** | everything that happened | the workflow file and the event log — already, since part 2 |
+| **state** | a running summary of old work, plus the recent turns | the loop's `turns` and `summary` |
+| **context** | what the model sees *this* turn | `buildContext`, assembled fresh every pass |
+
+```go
+for i := 0; i < maxSteps; i++ {
+    // 1. over budget? fold the oldest turns into the summary — a checkpointed step
+    turns, summary = a.compact(ctx, wf, …, summary, turns)
+
+    // 2. hydrate a fresh context, and run ONE turn over it
+    hydrated := buildContext(seed, input, summary, turns)
+    reply    := step(wf, "model-NN", think(hydrated))
+    …
+    turns = append(turns, Turn{reply, results…})   // one clean boundary per pass
+}
+```
+
+Watch it happen in the middle of a task:
+
+```sh
+go run . -sample
+```
+
+```
+  ⚙  tool.requested    {"name":"classifyItem",…}
+  ⚙  tool.requested    {"name":"runCode",…}
+  ⚙  tool.requested    {"name":"runCode",…}
+  ⚙  tool.requested    {"name":"draftReply",…}
+  🗜  memory.compacted  {"summarized_turns":3,"context_tokens":312}
+  ⚙  tool.requested    {"name":"sendReply","args":"{\"draft_id\":\"draft-cus_88121\",…}"}
+```
+
+Three turns went into the summary, and the very next call still sends the
+right draft. That is not luck: the summarizer is told to keep item ids, charge
+ids, draft ids, amounts, and what was already sent — the exact facts that turn
+into a wrong email when they fall out.
+
+Four decisions carry it:
+
+- **A budget in tokens, not turns.** A model batches several tool calls into
+  one turn, so turns are a bad proxy for size. `estimateTokens` is four
+  characters a token, which is the same rough measure production agents use.
+  The thresholds — compact over **500**, keep **200** — are tiny on purpose so
+  it fires on a demo; production sets them near the real window. The numbers
+  are a toy; the shape is the real thing.
+- **The goal is pinned.** The task sits right after the system prompt in every
+  context and is never summarized. A summary of the goal is a goal that has
+  drifted.
+- **Cut at whole turns.** A `Turn` is one assistant message and the result of
+  every call it made. Cutting inside one leaves a call with no result, which
+  the next model call refuses outright. And the newest turn always stays — the
+  model has not read its results yet.
+- **The summary is a checkpointed step.** `summarize-NN` is a model call like
+  any other. Whether to compact is decided from the turns alone, which were
+  rebuilt from checkpoints, so a replay makes the same decision at the same
+  pass and finds the summary already on disk:
+
+```sh
+go run . -sample -crash-at 5         # compacts at pass 4, dies before pass 5
+go run . -resume <id>
+```
+
+```
+  ⟲  workflow.resumed   7bd0fd82
+  ⏩  step.cached        {"name":"summarize-04"}     not summarized again
+  ⏩  step.cached        {"name":"model-04"}
+  ▪  step.completed     {"name":"model-05","ms":1845}
+```
+
+No second `memory.compacted` in the log, because the event is emitted inside
+the step — the same rule as the tool events, so a compaction in the log is a
+summary that was actually paid for. And nothing compacted is lost: every turn
+is still in the workflow file, and `-recover` still rebuilds the whole
+conversation from it. Compaction changes what is *sent*, never what is *kept*.
 
 ## One door (`internal/sandbox`)
 
@@ -416,7 +503,7 @@ anything outer, so each layer can be tested — or replaced — on its own.
 main.go                    wire the pieces together, then run
   └── internal/
         ui/       Console  the REPL. Owns stdin, knows only an Assistant
-        agent/    Agent    the loop, the prompt, and Session
+        agent/    Agent    the loop, the prompt, memory, and Session
         tools/    Registry the Tool interface, and every tool
         sandbox/  Box      the one door model-written code goes through
         durable/  Workflow checkpoint · crash · resume          ┐ the
@@ -435,7 +522,7 @@ not a single idea above it.
 ```go
 bus       := events.Bus{events.NewConsole(os.Stdout), events.NewJSONL(log)}
 store, _  := durable.NewStore(harnessPath("wf"), bus)
-assistant := agent.New(llm.NewOpenRouter(apiKey), Model, tools.Default()).
+assistant := agent.New(llm.NewOpenRouter(apiKey), Model, tools.Default(sandbox.New())).
                  WithEvents(bus).
                  WithStore(store)
 
@@ -472,23 +559,27 @@ reason `-recover` needed no new front-end.
 ## The loop (`internal/agent`)
 
 ```go
-working := []Msg{{system, SystemPrompt}, {user, wf.Input()}}
+var turns []Turn
+var summary string
 
 for step := 0; step < maxSteps; step++ {
+    turns, summary = compact(…)                    // over budget? checkpointed
+    hydrated := buildContext(seed, input, summary, turns)
     reply := durable.Step(wf, "model-NN", think)   // checkpointed
-    working = append(working, reply)
     if len(reply.ToolCalls) == 0 {
         return reply.Text                          // it answered: done
     }
+    turn := Turn{reply}
     for _, call := range reply.ToolCalls {
-        durable.Step(wf, "tool-"+call.ID, run)     // checkpointed
+        turn = append(turn, durable.Step(wf, "tool-"+call.ID, run))  // checkpointed
     }
+    turns = append(turns, turn)
 }
 ```
 
 Three things the loop owns rather than the model:
 
-- **`maxSteps`** (10) — a model that keeps asking for the same tool otherwise
+- **`maxSteps`** (15) — a model that keeps asking for the same tool otherwise
   loops until your credit does.
 - **Dispatch always returns a string.** A failure becomes `error: …` in the
   transcript, so the model can try something else. An error that propagated
@@ -542,8 +633,8 @@ purpose, and each one is a session's worth of work:
 |---|---|
 | be trusted with `sendReply` | **human-in-the-loop** — a gate the dangerous tool has to pass, and that can wait for days without holding a process open |
 | run model-written code *fast* | **a warm pool** — every program gets a fresh container, which is the right default and costs seconds. OpenSandbox has pools; a kernel-level runtime (gVisor, Firecracker) is the next step for code from someone hostile, behind the same door |
-| remember anything past this process | **memory** — a `Session` keeps a thread alive and `-recover` rebuilds one off disk, but both die with the terminal. Real memory means history, state and context kept apart, and compacted against a token budget |
-| stay affordable in a long task | **context management** — the messages are sent whole and grow all run |
+| remember anything past this process | **long-term memory** — a `Session` keeps a thread alive and `-recover` rebuilds one off disk, but both die with the terminal. Facts worth keeping across tasks want a store of their own, retrieved into the context like the summary is |
+| stay affordable over a long *conversation* | **compacting the seed** — a task is compacted now, but the conversation a REPL carries into it is pinned whole, and a `-recover` brings back a full transcript. A long enough session outgrows the budget the same way a long task used to |
 | be shown to be working | **evals** — no tests, no scores, nothing but your own reading of the replies. The seams above are what make them cheap to write: a stub `ToolBox` is three lines |
 
 Add them one at a time, and let each earn its place by fixing something you
