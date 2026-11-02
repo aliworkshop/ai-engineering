@@ -36,6 +36,11 @@ const (
 	ToolRequested  = "tool.requested"
 	ToolCompleted  = "tool.completed"
 	ModelCompleted = "model.completed"
+
+	// MemoryCompacted is old turns folded into the running summary: how many
+	// went, and how big the context is now. The turns themselves are not
+	// lost — they are still in the workflow file and this log.
+	MemoryCompacted = "memory.compacted"
 )
 
 // glyph is one character per event type, so a stream is scannable without
@@ -51,7 +56,7 @@ var glyph = map[string]string{
 	ModelCompleted:       "🧠",
 	ToolRequested:        "⚙",
 	ToolCompleted:        "✓",
-	"memory.compacted":   "🗜",
+	MemoryCompacted:      "🗜",
 	"agent.handoff":      "↪",
 	"plan.created":       "🗺",
 	"subagent.started":   "├",
@@ -79,6 +84,9 @@ type Event struct {
 	Output string `json:"output,omitempty"` // what it answered
 	Error  string `json:"error,omitempty"`
 	Millis int64  `json:"ms,omitempty"` // how long a step took
+
+	Summarized    int `json:"summarized_turns,omitempty"` // turns folded into the summary
+	ContextTokens int `json:"context_tokens,omitempty"`   // the context's size after
 }
 
 // Emitter is a place events go. An agent depends on this interface rather than
