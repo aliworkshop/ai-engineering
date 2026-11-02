@@ -259,7 +259,7 @@ func (a *Agent) compact(ctx context.Context, wf *durable.Workflow, id string, i 
 
 	name := fmt.Sprintf("summarize-%02d", i)
 	next, err := step(wf, name, func() (string, error) {
-		next, err := a.summarize(ctx, old, summary)
+		next, err := a.summarize(ctx, input, old, summary)
 		if err != nil {
 			return "", err
 		}

@@ -99,15 +99,28 @@ func peel(turns []Turn) (old, kept []Turn) {
 // summaryPrompt is what the summarizer is told. The list of things to keep is
 // what makes it safe: a draft id that falls out of the summary is a reply that
 // cannot be sent, and an item marked sent that falls out is one sent twice.
+//
+// The last two sentences go beyond the workshop. A summary of what was DONE
+// reads like a finished job, and a model handed one has stopped with replies
+// drafted and never sent — so the summary also says, per item, what is still
+// owed. That only works if the summarizer knows what the task asked for, which
+// is why summarize is handed the task too; without it, items that had merely
+// been classified came back marked "done". And it has to be told where "sent"
+// comes from: asked only for status, it once reported a reply sent that no
+// call had sent. A summarizer is a model, and a model fills gaps.
 const summaryPrompt = "You compress an agent's work log into a short running summary. " +
 	"Preserve concrete facts: item ids, customer ids, categories, charge ids, " +
-	"draft ids, amounts, and what was already sent. Be terse."
+	"draft ids, amounts, and what was already sent. Be terse. " +
+	"End with a \"Still to do\" list: one line per work item in the task, naming the steps " +
+	"the log does not show done yet, e.g. \"item-2: draft and send a reply\". " +
+	"Base every line only on tool calls that appear in the log, never on what seems likely: " +
+	"a reply counts as sent only if the log has a sendReply call for that item."
 
 // summarize folds old turns into the running summary. It is a model call like
 // any other, so the loop runs it as a checkpointed step: a crash never pays
 // for the same summary twice, and a replay rebuilds exactly the state the
 // crashed run had.
-func (a *Agent) summarize(ctx context.Context, old []Turn, prior string) (string, error) {
+func (a *Agent) summarize(ctx context.Context, task string, old []Turn, prior string) (string, error) {
 	var log strings.Builder
 	for _, m := range flatten(old) {
 		text := m.Text
@@ -129,7 +142,8 @@ func (a *Agent) summarize(ctx context.Context, old []Turn, prior string) (string
 		Model: openrouter.String(a.model),
 		Messages: toSDK([]Msg{
 			{Role: "system", Text: summaryPrompt},
-			{Role: "user", Text: "Prior summary:\n" + prior +
+			{Role: "user", Text: "The task:\n" + task +
+				"\n\nPrior summary:\n" + prior +
 				"\n\nFold in this newer work:\n" + transcript +
 				"\n\nReturn the updated summary."},
 		}),
