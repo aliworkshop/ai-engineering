@@ -130,9 +130,9 @@ func (a *Agent) summarize(ctx context.Context, task string, old []Turn, prior st
 		}
 		fmt.Fprintf(&log, "%s: %s\n", m.Role, text)
 	}
-	transcript := log.String()
-	if len(transcript) > 6000 {
-		transcript = transcript[:6000]
+	work := log.String()
+	if len(work) > 6000 {
+		work = work[:6000]
 	}
 	if prior == "" {
 		prior = "(none)"
@@ -144,7 +144,7 @@ func (a *Agent) summarize(ctx context.Context, task string, old []Turn, prior st
 			{Role: "system", Text: summaryPrompt},
 			{Role: "user", Text: "The task:\n" + task +
 				"\n\nPrior summary:\n" + prior +
-				"\n\nFold in this newer work:\n" + transcript +
+				"\n\nFold in this newer work:\n" + work +
 				"\n\nReturn the updated summary."},
 		}),
 	}, nil)
