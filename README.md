@@ -87,27 +87,36 @@ for i := 0; i < maxSteps; i++ {
 }
 ```
 
-Watch it happen in the middle of a task:
+Watch it happen in the middle of a task. The sample is three work items, as
+in the workshop — one item is about 400 tokens of turns, just under the budget,
+so whether a one-item run compacted came down to how chatty the model was that
+time. Three are over it every run:
 
 ```sh
 go run . -sample
 ```
 
 ```
-  ⚙  tool.requested    {"name":"classifyItem",…}
+  ⚙  tool.requested    {"name":"classifyItem","args":"{\"category\": \"billing\", \"item_id\": \"item-1\"}"}
+  ⚙  tool.requested    {"name":"classifyItem","args":"{\"category\": \"technical\", \"item_id\": \"item-2\"}"}
+  ⚙  tool.requested    {"name":"classifyItem","args":"{\"category\": \"sales\", \"item_id\": \"item-3\"}"}
   ⚙  tool.requested    {"name":"runCode",…}
   ⚙  tool.requested    {"name":"runCode",…}
-  ⚙  tool.requested    {"name":"draftReply",…}
-  🗜  memory.compacted  {"summarized_turns":3,"context_tokens":312}
-  ⚙  tool.requested    {"name":"sendReply","args":"{\"draft_id\":\"draft-cus_88121\",…}"}
+  ⚙  tool.requested    {"name":"draftReply","args":"{\"item_id\": \"item-1\",…}"}
+  ⚙  tool.requested    {"name":"draftReply","args":"{\"item_id\": \"item-2\",…}"}
+  ⚙  tool.requested    {"name":"draftReply","args":"{\"item_id\": \"item-3\",…}"}
+  🗜  memory.compacted  {"summarized_turns":3,"context_tokens":502}
+  ⚙  tool.requested    {"name":"sendReply","args":"{\"draft_id\": \"draft-item-1\",…}"}
+  ⚙  tool.requested    {"name":"sendReply","args":"{\"draft_id\": \"draft-item-2\",…}"}
+  ⚙  tool.requested    {"name":"sendReply","args":"{\"draft_id\": \"draft-item-3\",…}"}
 ```
 
-Three turns went into the summary, and the very next call still sends the
-right draft. That is not luck: the summarizer is told to keep item ids, charge
-ids, draft ids, amounts, and what was already sent — the exact facts that turn
-into a wrong email when they fall out.
+Three turns went into the summary, and the very next pass still sends every
+draft, each under the right id. That is not luck: the summarizer is told to keep
+item ids, charge ids, draft ids, amounts, and what was already sent — the exact
+facts that turn into a wrong email when they fall out.
 
-Four decisions carry it:
+Five decisions carry it:
 
 - **A budget in tokens, not turns.** A model batches several tool calls into
   one turn, so turns are a bad proxy for size. `estimateTokens` is four
@@ -125,10 +134,20 @@ Four decisions carry it:
 - **The summary is a checkpointed step.** `summarize-NN` is a model call like
   any other. Whether to compact is decided from the turns alone, which were
   rebuilt from checkpoints, so a replay makes the same decision at the same
-  pass and finds the summary already on disk:
+  pass and finds the summary already on disk (see below).
+- **The summary says what is still owed.** This goes beyond the workshop. A
+  summary of what was *done* reads like a finished job, and gpt-4o-mini handed
+  one has stopped with two replies drafted and never sent. So the summary ends
+  with a *Still to do* line per item, and the summarizer is given the task so
+  it knows what "done" means. It is also told that a reply counts as sent only
+  if the log has the `sendReply` call: asked just for a status, it once called
+  a reply sent that nothing had sent. A summarizer is a model, and a model
+  fills gaps.
+
+Replayed after a crash, the summary is served from disk, not made again:
 
 ```sh
-go run . -sample -crash-at 5         # compacts at pass 4, dies before pass 5
+go run . -sample -crash-at 5         # compacts at pass 3 or 4, dies before pass 5
 go run . -resume <id>
 ```
 
