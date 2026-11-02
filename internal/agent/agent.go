@@ -21,6 +21,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"strings"
 
 	openrouter "github.com/OpenRouterTeam/go-sdk"
 	"github.com/OpenRouterTeam/go-sdk/models/components"
@@ -180,7 +181,7 @@ func (a *Agent) finished(id, answer string, err error) {
 // think again with the results, and stop when a reply carries no tool calls.
 //
 // Everything non-deterministic happens inside a step. Everything outside one —
-// this slice, this counter, this if — is rebuilt identically on a replay,
+// these turns, this counter, this if — is rebuilt identically on a replay,
 // which is the golden rule of durable workflows and the only reason recovery
 // can be this simple.
 func (a *Agent) loop(ctx context.Context, wf *durable.Workflow, id, input string, seed []Msg) (string, error) {
@@ -197,35 +198,88 @@ func (a *Agent) loop(ctx context.Context, wf *durable.Workflow, id, input string
 		return "", err
 	}
 
-	working := make([]Msg, 0, len(seed)+2)
-	working = append(working, Msg{Role: "system", Text: SystemPrompt})
-	working = append(working, seed...)
-	working = append(working, Msg{Role: "user", Text: input})
+	// Turns, not a flat slice, so compaction can cut at clean boundaries; and
+	// a summary of whatever has been cut. Together they are the run's STATE.
+	// The context the model sees is built from them fresh on every pass.
+	var turns []Turn
+	var summary string
 
 	for i := 0; i < maxSteps; i++ {
 		a.maybeCrash(wf, i)
 
-		name := fmt.Sprintf("model-%02d", i)
-		reply, err := step(wf, name, func() (Msg, error) { return a.think(ctx, working) })
+		// 1. Over budget? Fold the oldest turns into the running summary.
+		turns, summary, err = a.compact(ctx, wf, id, i, seed, input, summary, turns)
 		if err != nil {
 			return "", err
 		}
-		working = append(working, reply)
+
+		// 2. Hydrate a fresh context, and run ONE turn over it.
+		hydrated := buildContext(seed, input, summary, turns)
+		name := fmt.Sprintf("model-%02d", i)
+		reply, err := step(wf, name, func() (Msg, error) { return a.think(ctx, hydrated) })
+		if err != nil {
+			return "", err
+		}
 
 		// No tool calls means the model is answering rather than acting.
 		if len(reply.ToolCalls) == 0 {
 			return reply.Text, nil
 		}
 
+		turn := Turn{reply}
 		for _, call := range reply.ToolCalls {
 			result, err := a.runTool(ctx, wf, id, call)
 			if err != nil {
 				return "", err
 			}
-			working = append(working, Msg{Role: "tool", Text: result, ToolCallID: call.ID})
+			turn = append(turn, Msg{Role: "tool", Text: result, ToolCallID: call.ID})
 		}
+		turns = append(turns, turn) // one clean compaction boundary per pass
 	}
 	return "", fmt.Errorf("hit the step limit after %d tool rounds", maxSteps)
+}
+
+// compact folds the oldest turns into the summary when the turns have grown
+// past the budget, and leaves everything alone when they have not.
+//
+// Whether to compact is decided from the turns alone, which were themselves
+// rebuilt from checkpoints — so a replay makes the same decision at the same
+// pass, and finds the summary already on disk under the same name. The event
+// is emitted inside that step for the same reason the tool events are: a
+// memory.compacted in the log is a summary that was actually paid for.
+func (a *Agent) compact(ctx context.Context, wf *durable.Workflow, id string, i int,
+	seed []Msg, input, summary string, turns []Turn) ([]Turn, string, error) {
+	if estimateTokens(flatten(turns)) <= maxContextTokens {
+		return turns, summary, nil
+	}
+	old, kept := peel(turns)
+	if len(old) == 0 {
+		return turns, summary, nil
+	}
+
+	name := fmt.Sprintf("summarize-%02d", i)
+	next, err := step(wf, name, func() (string, error) {
+		next, err := a.summarize(ctx, old, summary)
+		if err != nil {
+			return "", err
+		}
+		// An empty summary would throw away everything it replaced. Keep
+		// the old one instead; the turns are gone from the context either
+		// way, but not from the log.
+		if strings.TrimSpace(next) == "" {
+			next = summary
+		}
+		events.Emit(a.bus, events.Event{
+			Type: events.MemoryCompacted, Workflow: id,
+			Summarized:    len(old),
+			ContextTokens: estimateTokens(buildContext(seed, input, next, kept)),
+		})
+		return next, nil
+	})
+	if err != nil {
+		return nil, "", err
+	}
+	return kept, next, nil
 }
 
 // runTool runs one tool as a checkpointed step.
@@ -284,7 +338,7 @@ func (a *Agent) maybeCrash(wf *durable.Workflow, i int) {
 	os.Exit(1)
 }
 
-// think is one model call: the conversation so far goes out, with the tools
+// think is one model call: the context for this turn goes out, with the tools
 // the model is allowed to ask for, and one reply comes back.
 func (a *Agent) think(ctx context.Context, working []Msg) (Msg, error) {
 	res, err := a.client.Chat.Send(ctx, components.ChatRequest{
